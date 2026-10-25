@@ -11,6 +11,7 @@ const AMAP_SECURITY_CODE = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE || '';
 interface InteractiveMapProps {
   center: [number, number]; // [lng, lat]
   zoom?: number;
+  flyVersion?: number; // 显式控制相机跳转版本号，避免组件重渲染或状态更新时误回跳默认中心
   userLocation?: { lng: number; lat: number } | null;
   toilets?: ToiletItem[];
   nearestId?: string | null;
@@ -24,7 +25,8 @@ interface InteractiveMapProps {
     lng: number,
     lat: number,
     currentZoom?: number,
-    bounds?: MapBounds | null
+    bounds?: MapBounds | null,
+    isUserAction?: boolean
   ) => void;
   onSelectToilet?: (toilet: ToiletItem) => void;
   onPickLocation?: (lng: number, lat: number) => void;
@@ -108,7 +110,6 @@ function buildMarkerHtml(
 
   const active = isSelected || isHovered;
 
-  // 地图缩小时（zoom <= 14）对普通点位采用紧凑圆点样式，既能清晰展示上百个公厕又不互相遮挡
   if (currentZoom <= 14 && !isNearest && !active) {
     return `
       <div title="${safeTitle}" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:${bgColor};color:#fff;border:2px solid #fff;box-shadow:0 3px 10px rgba(15,23,42,0.22);font-size:13px;cursor:pointer;user-select:none;">
@@ -186,6 +187,7 @@ function readMapViewport(
 export default function InteractiveMap({
   center,
   zoom = 15,
+  flyVersion,
   userLocation,
   toilets = [],
   nearestId,
@@ -206,6 +208,23 @@ export default function InteractiveMap({
   const [mapReady, setMapReady] = useState(false);
   const [currentZoom, setCurrentZoom] = useState(zoom);
 
+  // 实时记录地图最新真实中心点与缩放层级，防止地图引擎切换或重绘时回退到旧 props
+  const liveViewRef = useRef<{ lng: number; lat: number; zoom: number }>({
+    lng: center[0],
+    lat: center[1],
+    zoom,
+  });
+  const appliedFlyVersionRef = useRef<number | undefined>(flyVersion);
+
+  // 如果在地图尚未挂载完成前外部就已经通过缓存或定位更新了目标中心点，立即同步到 liveViewRef
+  if (!mapReady) {
+    liveViewRef.current = {
+      lng: center[0],
+      lat: center[1],
+      zoom,
+    };
+  }
+
   const callbacksRef = useRef({
     onMoveEnd,
     onSelectToilet,
@@ -224,7 +243,7 @@ export default function InteractiveMap({
   const userMarkerRef = useRef<any>(null);
   const suppressMoveEndRef = useRef(false);
 
-  // 自动识别高德 Key 类型（JS API SDK 或 高德官方矢量瓦片引擎）
+  // 自动识别高德 Key 类型
   useEffect(() => {
     let active = true;
     setMapReady(false);
@@ -245,7 +264,7 @@ export default function InteractiveMap({
     };
   }, []);
 
-  // 初始化高德地图实例
+  // 初始化高德地图实例（始终使用 liveViewRef 最新坐标而非旧初始值）
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !resolvedEngine) return;
@@ -259,16 +278,25 @@ export default function InteractiveMap({
     userMarkerRef.current = null;
     containerEl.innerHTML = '';
 
-    const emitViewport = (force = false) => {
-      if (!instance || (!force && suppressMoveEndRef.current)) return;
+    const emitViewport = (isInitial = false) => {
+      if (!instance || (!isInitial && suppressMoveEndRef.current)) return;
       const vp = readMapViewport(instance, activeEngine);
       if (vp) {
+        liveViewRef.current = { lng: vp.lng, lat: vp.lat, zoom: vp.zoom };
         setCurrentZoom(vp.zoom);
-        callbacksRef.current.onMoveEnd?.(vp.lng, vp.lat, vp.zoom, vp.bounds);
+        callbacksRef.current.onMoveEnd?.(
+          vp.lng,
+          vp.lat,
+          vp.zoom,
+          vp.bounds,
+          !isInitial
+        );
       }
     };
 
     async function setup() {
+      const startView = liveViewRef.current;
+
       if (activeEngine === 'amap-sdk') {
         try {
           if (AMAP_SECURITY_CODE) {
@@ -285,9 +313,10 @@ export default function InteractiveMap({
           });
           if (destroyed) return;
 
+          const latestStart = liveViewRef.current;
           instance = new AMap.Map(containerEl, {
-            zoom,
-            center: [center[0], center[1]],
+            zoom: latestStart.zoom,
+            center: [latestStart.lng, latestStart.lat],
             viewMode: '2D',
             dragEnable: true,
             zoomEnable: true,
@@ -311,6 +340,7 @@ export default function InteractiveMap({
           }
 
           mapRef.current = instance;
+          appliedFlyVersionRef.current = flyVersion;
           setMapReady(true);
           setTimeout(() => emitViewport(true), 80);
           return;
@@ -326,9 +356,10 @@ export default function InteractiveMap({
       if (destroyed) return;
       leafletModRef.current = L;
 
+      const latestStart = liveViewRef.current || startView;
       instance = L.map(containerEl, {
-        center: [center[1], center[0]],
-        zoom,
+        center: [latestStart.lat, latestStart.lng],
+        zoom: latestStart.zoom,
         zoomControl: false,
         attributionControl: false,
         scrollWheelZoom: true,
@@ -337,7 +368,6 @@ export default function InteractiveMap({
         dragging: true,
       });
 
-      // 高德官方标准中文矢量道路切片（含地铁口、商场、公园与街巷地标）
       L.tileLayer(
         'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
         {
@@ -362,6 +392,7 @@ export default function InteractiveMap({
       }
 
       mapRef.current = instance;
+      appliedFlyVersionRef.current = flyVersion;
       setMapReady(true);
       setTimeout(() => emitViewport(true), 80);
     }
@@ -382,7 +413,7 @@ export default function InteractiveMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedEngine, pickerMode]);
 
-  // 监听容器尺寸变化（适配手机横竖屏、电脑窗口缩放、侧边栏折叠展开）
+  // 监听容器尺寸变化
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -419,34 +450,31 @@ export default function InteractiveMap({
     [mapReady]
   );
 
-  // 外部中心点变更时平滑平移，并在平移后上报新视野范围以触发公厕补全
+  // 仅当显式触发相机跳转（flyVersion 递增）或未启用 flyVersion 的选点组件更新 center 时平移地图
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady || !resolvedEngine) return;
 
+    if (flyVersion !== undefined) {
+      if (flyVersion === appliedFlyVersionRef.current) {
+        return;
+      }
+      appliedFlyVersionRef.current = flyVersion;
+    }
+
+    liveViewRef.current = { lng: center[0], lat: center[1], zoom };
     suppressMoveEndRef.current = true;
     let moved = false;
+
     try {
       if (resolvedEngine === 'amap-sdk') {
-        const cur = map.getCenter();
-        if (
-          !cur ||
-          Math.abs(cur.getLng() - center[0]) > 0.0003 ||
-          Math.abs(cur.getLat() - center[1]) > 0.0003
-        ) {
-          map.setCenter([center[0], center[1]]);
-          moved = true;
-        }
+        map.setZoomAndCenter
+          ? map.setZoomAndCenter(zoom, [center[0], center[1]])
+          : map.setCenter([center[0], center[1]]);
+        moved = true;
       } else {
-        const cur = map.getCenter();
-        if (
-          !cur ||
-          Math.abs(cur.lng - center[0]) > 0.0003 ||
-          Math.abs(cur.lat - center[1]) > 0.0003
-        ) {
-          map.setView([center[1], center[0]], map.getZoom(), { animate: true });
-          moved = true;
-        }
+        map.setView([center[1], center[0]], zoom, { animate: true });
+        moved = true;
       }
     } finally {
       setTimeout(() => {
@@ -454,18 +482,20 @@ export default function InteractiveMap({
         if (moved && mapRef.current && resolvedEngine) {
           const vp = readMapViewport(mapRef.current, resolvedEngine);
           if (vp) {
+            liveViewRef.current = { lng: vp.lng, lat: vp.lat, zoom: vp.zoom };
             setCurrentZoom(vp.zoom);
             callbacksRef.current.onMoveEnd?.(
               vp.lng,
               vp.lat,
               vp.zoom,
-              vp.bounds
+              vp.bounds,
+              false
             );
           }
         }
-      }, 300);
+      }, 320);
     }
-  }, [center, mapReady, resolvedEngine]);
+  }, [center, zoom, flyVersion, mapReady, resolvedEngine]);
 
   // 渲染当前用户定位蓝点
   useEffect(() => {

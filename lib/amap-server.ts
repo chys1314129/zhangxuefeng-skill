@@ -134,6 +134,51 @@ export async function reverseGeocodeServer(
   return '';
 }
 
+export async function locateByIpServer(clientIp?: string | null): Promise<{
+  lng: number;
+  lat: number;
+  city: string;
+} | null> {
+  const key = getServerAmapKey();
+  if (!key) return null;
+
+  let url = `https://restapi.amap.com/v3/ip?key=${encodeURIComponent(key)}`;
+  const cleanIp = (clientIp || '').split(',')[0].trim();
+  if (
+    cleanIp &&
+    cleanIp !== '127.0.0.1' &&
+    cleanIp !== '::1' &&
+    !cleanIp.startsWith('10.') &&
+    !cleanIp.startsWith('192.168.') &&
+    !cleanIp.startsWith('172.16.')
+  ) {
+    url += `&ip=${encodeURIComponent(cleanIp)}`;
+  }
+
+  const data = await fetchAmapJson(url, 2500);
+  if (data?.status === '1' && typeof data.rectangle === 'string' && data.rectangle.includes(';')) {
+    const [p1, p2] = data.rectangle.split(';');
+    const [lng1, lat1] = (p1 || '').split(',').map(Number);
+    const [lng2, lat2] = (p2 || '').split(',').map(Number);
+    if (
+      Number.isFinite(lng1) &&
+      Number.isFinite(lat1) &&
+      Number.isFinite(lng2) &&
+      Number.isFinite(lat2)
+    ) {
+      return {
+        lng: Number(((lng1 + lng2) / 2).toFixed(6)),
+        lat: Number(((lat1 + lat2) / 2).toFixed(6)),
+        city:
+          (typeof data.city === 'string' && data.city) ||
+          (typeof data.province === 'string' && data.province) ||
+          '',
+      };
+    }
+  }
+  return null;
+}
+
 export async function searchAroundToiletsServer(opts: {
   lng: number;
   lat: number;

@@ -11,6 +11,7 @@ import { z } from 'zod';
 import PhotoUploader from '@/components/AddToilet/PhotoUploader';
 import MapPicker from '@/components/Map/MapPicker';
 import { useAuth } from '@/hooks/useAuth';
+import { saveMapViewport } from '@/hooks/useUserLocation';
 
 const addToiletSchema = z.object({
   name: z.string().trim().min(1, '请输入厕所名称').max(50, '名称最多50字'),
@@ -37,10 +38,11 @@ function AddToiletContent() {
 
   const initLng = parseFloat(searchParams.get('lng') || '');
   const initLat = parseFloat(searchParams.get('lat') || '');
-  const pickerInitial: [number, number] =
-    Number.isFinite(initLng) && Number.isFinite(initLat)
-      ? [initLng, initLat]
-      : [116.397428, 39.90923];
+  const hasExplicitCenter =
+    Number.isFinite(initLng) && Number.isFinite(initLat);
+  const pickerInitial: [number, number] = hasExplicitCenter
+    ? [initLng, initLat]
+    : [116.397428, 39.90923];
 
   const [photos, setPhotos] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -122,6 +124,7 @@ function AddToiletContent() {
       const result = await res.json();
 
       if (result.code === 200) {
+        saveMapViewport(data.lng, data.lat, 16);
         toast.success(result.data.message);
         const createdId = result.data?.toilet?.id;
         if (createdId) {
@@ -178,6 +181,7 @@ function AddToiletContent() {
 
           <MapPicker
             initialCenter={pickerInitial}
+            hasExplicitCenter={hasExplicitCenter}
             onLocationChange={(lng, lat, address) => {
               setValue('lng', lng);
               setValue('lat', lat);

@@ -553,6 +553,68 @@ export async function searchPlaceClient(
 }
 
 /**
+ * 高德 IP 城市级兜底定位（解决电脑端 Chrome/Edge 无法连接 Google 定位服务及室内 GPS 超时回退北京的问题）
+ */
+export async function locateByAmapIpClient(): Promise<{
+  lng: number;
+  lat: number;
+  city: string;
+} | null> {
+  if (typeof window === 'undefined') return null;
+
+  const parseRect = (data: any) => {
+    if (
+      data?.status === '1' &&
+      typeof data.rectangle === 'string' &&
+      data.rectangle.includes(';')
+    ) {
+      const [p1, p2] = data.rectangle.split(';');
+      const [lng1, lat1] = (p1 || '').split(',').map(Number);
+      const [lng2, lat2] = (p2 || '').split(',').map(Number);
+      if (
+        Number.isFinite(lng1) &&
+        Number.isFinite(lat1) &&
+        Number.isFinite(lng2) &&
+        Number.isFinite(lat2)
+      ) {
+        return {
+          lng: Number(((lng1 + lng2) / 2).toFixed(6)),
+          lat: Number(((lat1 + lat2) / 2).toFixed(6)),
+          city:
+            (typeof data.city === 'string' && data.city) ||
+            (typeof data.province === 'string' && data.province) ||
+            '',
+        };
+      }
+    }
+    return null;
+  };
+
+  if (AMAP_KEY) {
+    const data = await fetchAmapRest(
+      `https://restapi.amap.com/v3/ip?key=${encodeURIComponent(AMAP_KEY)}`,
+      3000
+    );
+    const parsed = parseRect(data);
+    if (parsed) return parsed;
+  }
+
+  try {
+    const res = await fetch('/api/v1/amap/around?mode=ip');
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.data?.location?.lng && json?.data?.location?.lat) {
+        return json.data.location;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+/**
  * 生成高德地图步行导航链接
  */
 export function buildAMapWalkUrl(opts: {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  locateByIpServer,
   reverseGeocodeServer,
   searchAroundToiletsServer,
 } from '@/lib/amap-server';
@@ -10,6 +11,16 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get('mode') || 'around';
+
+  if (mode === 'ip') {
+    const forwarded =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      '';
+    const ipLoc = await locateByIpServer(forwarded);
+    return NextResponse.json({ code: 200, data: { location: ipLoc } });
+  }
+
   const lng = parseFloat(searchParams.get('lng') || '');
   const lat = parseFloat(searchParams.get('lat') || '');
 

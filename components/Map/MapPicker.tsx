@@ -1,22 +1,28 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Crosshair, Maximize2, Minimize2, Search } from 'lucide-react';
 import InteractiveMap from '@/components/Map/InteractiveMap';
-import { useUserLocation } from '@/hooks/useUserLocation';
+import {
+  readPreferredInitialView,
+  useUserLocation,
+} from '@/hooks/useUserLocation';
 import { reverseGeocodeClient, searchPlaceClient } from '@/lib/mapService';
 
 interface MapPickerProps {
   initialCenter?: [number, number];
+  hasExplicitCenter?: boolean;
   onLocationChange: (lng: number, lat: number, address: string) => void;
 }
 
 export default function MapPicker({
   initialCenter = [116.397428, 39.90923],
+  hasExplicitCenter = false,
   onLocationChange,
 }: MapPickerProps) {
-  const { location } = useUserLocation();
+  const { location, requestLocation } = useUserLocation();
   const [center, setCenter] = useState<[number, number]>(initialCenter);
+  const [flyVersion, setFlyVersion] = useState<number>(0);
   const [mapViewCenter, setMapViewCenter] =
     useState<[number, number]>(initialCenter);
   const [picked, setPicked] = useState<[number, number]>(initialCenter);
@@ -25,13 +31,25 @@ export default function MapPicker({
   const [searching, setSearching] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
 
-  const updatePoint = async (lng: number, lat: number, moveCenter = false) => {
+  const userPickedManuallyRef = useRef<boolean>(hasExplicitCenter);
+  const initializedRef = useRef<boolean>(false);
+
+  const updatePoint = async (
+    lng: number,
+    lat: number,
+    moveCenter = false,
+    manual = false
+  ) => {
+    if (manual) {
+      userPickedManuallyRef.current = true;
+    }
     const fixedLng = Number(lng.toFixed(6));
     const fixedLat = Number(lat.toFixed(6));
     setPicked([fixedLng, fixedLat]);
     if (moveCenter) {
       setCenter([fixedLng, fixedLat]);
       setMapViewCenter([fixedLng, fixedLat]);
+      setFlyVersion((v) => v + 1);
     }
     setResolvingAddr(true);
     const addr = await reverseGeocodeClient(fixedLng, fixedLat);
@@ -39,14 +57,36 @@ export default function MapPicker({
     onLocationChange(fixedLng, fixedLat, addr);
   };
 
+  // 初始化选点位置：若 URL 带了指定坐标则固定在指定坐标；否则优先使用用户真实定位或上次浏览视野，绝不回跳北京
   useEffect(() => {
-    if (location?.inChina) {
-      updatePoint(location.lng, location.lat, true);
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    if (hasExplicitCenter) {
+      void updatePoint(initialCenter[0], initialCenter[1], true, true);
+      return;
+    }
+
+    if (location) {
+      void updatePoint(location.lng, location.lat, true, false);
+      return;
+    }
+
+    const saved = readPreferredInitialView();
+    if (saved) {
+      void updatePoint(saved.lng, saved.lat, true, false);
     } else {
-      updatePoint(initialCenter[0], initialCenter[1], false);
+      void updatePoint(initialCenter[0], initialCenter[1], false, false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location?.inChina]);
+  }, []);
+
+  // 当真实定位异步返回且用户尚未手动选点时，自动将选点移至用户所在位置
+  useEffect(() => {
+    if (!location || hasExplicitCenter || userPickedManuallyRef.current) return;
+    void updatePoint(location.lng, location.lat, true, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location?.lng, location?.lat, location?.accuracy]);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -64,14 +104,26 @@ export default function MapPicker({
     setSearching(false);
     if (list.length > 0) {
       const first = list[0];
+      userPickedManuallyRef.current = true;
       setPicked([first.lng, first.lat]);
       setCenter([first.lng, first.lat]);
       setMapViewCenter([first.lng, first.lat]);
+      setFlyVersion((v) => v + 1);
       onLocationChange(
         first.lng,
         first.lat,
         first.address ? `${first.name} (${first.address})` : first.name
       );
+    }
+  };
+
+  const handleLocateToMe = async () => {
+    if (location) {
+      void updatePoint(location.lng, location.lat, true, true);
+    }
+    const fresh = await requestLocation(true);
+    if (fresh) {
+      void updatePoint(fresh.lng, fresh.lat, true, true);
     }
   };
 
@@ -102,13 +154,14 @@ export default function MapPicker({
         <InteractiveMap
           center={center}
           zoom={16}
+          flyVersion={flyVersion}
           pickerMode
           pickedPoint={picked}
           userLocation={location}
           showZoomControls
           zoomControlPosition="bottom-right"
           onMoveEnd={(lng, lat) => setMapViewCenter([lng, lat])}
-          onPickLocation={(lng, lat) => updatePoint(lng, lat, false)}
+          onPickLocation={(lng, lat) => updatePoint(lng, lat, false, true)}
         />
 
         {/* 左上提示 */}
@@ -142,22 +195,22 @@ export default function MapPicker({
         <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2">
           <button
             type="button"
-            onClick={() => updatePoint(mapViewCenter[0], mapViewCenter[1], false)}
+            onClick={() =>
+              updatePoint(mapViewCenter[0], mapViewCenter[1], false, true)
+            }
             className="bg-white/95 hover:bg-white px-2.5 py-1.5 rounded-lg shadow-md border border-slate-200 text-slate-700 text-xs font-medium"
           >
             📌 选在视野中心
           </button>
 
-          {location && (
-            <button
-              type="button"
-              onClick={() => updatePoint(location.lng, location.lat, true)}
-              title="定位到我的位置"
-              className="bg-white/95 hover:bg-white p-2 rounded-lg shadow-md border border-slate-200 text-blue-600"
-            >
-              <Crosshair className="w-4 h-4" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleLocateToMe}
+            title="定位到我的位置"
+            className="bg-white/95 hover:bg-white p-2 rounded-lg shadow-md border border-slate-200 text-blue-600"
+          >
+            <Crosshair className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>
@@ -179,7 +232,7 @@ export default function MapPicker({
                 handlePlaceSearch();
               }
             }}
-            placeholder="搜地标快速跳转（如：三里屯、人民广场）"
+            placeholder="搜地标快速跳转（如：超市、医院、公园名称）"
             className="w-full pl-9 pr-3 py-2 text-xs md:text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>

@@ -1,6 +1,13 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -25,7 +32,12 @@ import ToiletListDrawer from '@/components/Map/ToiletListDrawer';
 import NavigationModal from '@/components/Toilet/NavigationModal';
 import { useAuth } from '@/hooks/useAuth';
 import { ToiletFilters, useToilets } from '@/hooks/useToilets';
-import { useUserLocation } from '@/hooks/useUserLocation';
+import {
+  LocationAccuracyLevel,
+  readPreferredInitialView,
+  saveMapViewport,
+  useUserLocation,
+} from '@/hooks/useUserLocation';
 import {
   CITY_HOTSPOTS,
   estimateWalkMinutes,
@@ -34,26 +46,44 @@ import {
 import { PlaceSuggestion, searchPlaceClient } from '@/lib/mapService';
 import type { MapBounds, ToiletItem } from '@/types';
 
-const DEFAULT_CENTER: [number, number] = [116.397428, 39.90923]; // 北京天安门/王府井
+const FALLBACK_CENTER: [number, number] = [116.397428, 39.90923];
 const GENERIC_TOILET_QUERY_RE = /^(公共)?(厕所|公厕|洗手间|卫生间|wc|toilet)$/i;
+const ACCURACY_SCORE: Record<LocationAccuracyLevel, number> = {
+  ip: 1,
+  network: 2,
+  gps: 3,
+};
 
 function MapHomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
-  const { location, requestLocation } = useUserLocation();
+  const { location, loading: locating, requestLocation } = useUserLocation();
 
   const initialLng = parseFloat(searchParams.get('lng') || '');
   const initialLat = parseFloat(searchParams.get('lat') || '');
+  const hasUrlCoords =
+    Number.isFinite(initialLng) && Number.isFinite(initialLat);
 
   const [mapCenter, setMapCenter] = useState<[number, number]>(
-    Number.isFinite(initialLng) && Number.isFinite(initialLat)
-      ? [initialLng, initialLat]
-      : DEFAULT_CENTER
+    hasUrlCoords ? [initialLng, initialLat] : FALLBACK_CENTER
   );
-  const [queryCenter, setQueryCenter] = useState<[number, number]>(mapCenter);
+  const [queryCenter, setQueryCenter] = useState<[number, number]>(
+    hasUrlCoords ? [initialLng, initialLat] : FALLBACK_CENTER
+  );
   const [mapZoom, setMapZoom] = useState<number>(15);
+  const [flyVersion, setFlyVersion] = useState<number>(0);
   const [viewportBounds, setViewportBounds] = useState<MapBounds | null>(null);
+
+  const mapZoomRef = useRef<number>(15);
+  mapZoomRef.current = mapZoom;
+
+  // 标记是否已脱离初始兜底点（防止未完成定位前把兜底北京坐标误写入会话缓存）
+  const hasRealPositionRef = useRef<boolean>(hasUrlCoords);
+  // 标记用户是否已在当前会话恢复了浏览视野或主动拖拽/搜索了地图
+  const restoredSessionRef = useRef<boolean>(false);
+  const userMovedMapRef = useRef<boolean>(hasUrlCoords);
+  const appliedAccuracyRef = useRef<number>(0);
 
   const [filters, setFilters] = useState<ToiletFilters>({});
   const [selectedToilet, setSelectedToilet] = useState<ToiletItem | null>(null);
@@ -68,6 +98,61 @@ function MapHomeContent() {
   const [searchingPlace, setSearchingPlace] = useState(false);
 
   const desktopSearchRef = useRef<HTMLInputElement>(null);
+
+  const flyTo = useCallback(
+    (lng: number, lat: number, targetZoom?: number, persist = true) => {
+      const nextZoom =
+        typeof targetZoom === 'number' ? targetZoom : mapZoomRef.current;
+      hasRealPositionRef.current = true;
+      setMapCenter([lng, lat]);
+      setQueryCenter([lng, lat]);
+      setMapZoom(nextZoom);
+      setFlyVersion((v) => v + 1);
+      if (persist) {
+        saveMapViewport(lng, lat, nextZoom);
+      }
+    },
+    []
+  );
+
+  // 客户端挂载首帧：优先恢复会话视野或历史真实用户定位，杜绝切页返回或刷新后跳回北京
+  useEffect(() => {
+    if (hasUrlCoords) {
+      hasRealPositionRef.current = true;
+      userMovedMapRef.current = true;
+      saveMapViewport(initialLng, initialLat, 16);
+      return;
+    }
+
+    const saved = readPreferredInitialView();
+    if (saved) {
+      hasRealPositionRef.current = true;
+      if (saved.source === 'session') {
+        restoredSessionRef.current = true;
+      }
+      setMapCenter([saved.lng, saved.lat]);
+      setQueryCenter([saved.lng, saved.lat]);
+      setMapZoom(saved.zoom);
+      setFlyVersion((v) => v + 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 当真实定位到达（先 IP 城市级、再 GPS/Wi-Fi 街道级）时，若用户尚未手动移图或恢复会话，自动锁定到用户真实位置
+  useEffect(() => {
+    if (!location || hasUrlCoords) return;
+
+    const score = ACCURACY_SCORE[location.accuracy] || 1;
+    if (
+      !restoredSessionRef.current &&
+      !userMovedMapRef.current &&
+      score > appliedAccuracyRef.current
+    ) {
+      appliedAccuracyRef.current = score;
+      const targetZoom = score >= 2 ? 16 : 14;
+      flyTo(location.lng, location.lat, targetZoom, true);
+    }
+  }, [location, hasUrlCoords, flyTo]);
 
   // 电脑端快捷键支持：按 `/` 聚焦搜索框，按 `Esc` 收起下拉菜单
   useEffect(() => {
@@ -93,20 +178,6 @@ function MapHomeContent() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [sidebarOpen]);
-
-  // 首次若真实定位在国内，自动切到用户当前位置
-  const [autoCenteredUser, setAutoCenteredUser] = useState(false);
-  useEffect(() => {
-    if (
-      !autoCenteredUser &&
-      location?.inChina &&
-      !Number.isFinite(initialLng)
-    ) {
-      setAutoCenteredUser(true);
-      setMapCenter([location.lng, location.lat]);
-      setQueryCenter([location.lng, location.lat]);
-    }
-  }, [location, autoCenteredUser, initialLng]);
 
   const dynamicRadius = useMemo(() => {
     if (mapZoom >= 16) return 2800;
@@ -151,7 +222,6 @@ function MapHomeContent() {
       return;
     }
 
-    // 如果用户直接输入“厕所/公厕/洗手间”，立即深度扫描当前视野内全部公厕，而不是跳到外地同名地点
     if (GENERIC_TOILET_QUERY_RE.test(kw)) {
       setFilters((f) => ({ ...f, keyword: '' }));
       setSuggestions([]);
@@ -178,8 +248,8 @@ function MapHomeContent() {
   };
 
   const jumpToPlace = (lng: number, lat: number, label?: string) => {
-    setMapCenter([lng, lat]);
-    setQueryCenter([lng, lat]);
+    userMovedMapRef.current = true;
+    flyTo(lng, lat, 15, true);
     setSelectedToilet(null);
     setSuggestions([]);
     setHotspotOpen(false);
@@ -193,25 +263,40 @@ function MapHomeContent() {
       toast.error('当前视野暂无可用厕所，请点击「刷新此区域」或缩小地图');
       return;
     }
+    userMovedMapRef.current = true;
     setSelectedToilet(nearest);
-    setMapCenter([nearest.lng, nearest.lat]);
+    flyTo(nearest.lng, nearest.lat, Math.max(mapZoom, 16), true);
     setNavTarget(nearest);
   };
 
-  const handleLocateMe = () => {
+  const handleLocateMe = async () => {
+    userMovedMapRef.current = false;
+    restoredSessionRef.current = false;
+
     if (location) {
-      setMapCenter([location.lng, location.lat]);
-      setQueryCenter([location.lng, location.lat]);
-      if (!location.inChina) {
+      flyTo(
+        location.lng,
+        location.lat,
+        location.accuracy === 'ip' ? 14 : 16,
+        true
+      );
+    } else {
+      toast.info('正在获取您的当前位置...');
+    }
+
+    const fresh = await requestLocation(true);
+    if (fresh) {
+      appliedAccuracyRef.current = ACCURACY_SCORE[fresh.accuracy] || 1;
+      flyTo(fresh.lng, fresh.lat, fresh.accuracy === 'ip' ? 14 : 16, true);
+      if (fresh.accuracy === 'ip') {
         toast.info(
-          '已定位到您当前的海外坐标（中国境内公厕数据最丰富，可通过热门商圈一键切换体验）'
+          `已按网络定位到${fresh.city ? `「${fresh.city}」` : '您所在城市'}（开启浏览器定位权限可精确到街道）`
         );
       } else {
-        toast.success('已回到您的当前位置');
+        toast.success('已精准定位到您的当前位置');
       }
-    } else {
-      requestLocation();
-      toast.info('正在请求浏览器定位权限...');
+    } else if (!location) {
+      toast.error('无法获取当前定位，请检查浏览器定位权限或直接搜索您所在位置');
     }
   };
 
@@ -423,8 +508,9 @@ function MapHomeContent() {
                     onMouseEnter={() => setHoveredToiletId(t.id)}
                     onMouseLeave={() => setHoveredToiletId(null)}
                     onClick={() => {
+                      userMovedMapRef.current = true;
                       setSelectedToilet(t);
-                      setMapCenter([t.lng, t.lat]);
+                      flyTo(t.lng, t.lat, Math.max(mapZoom, 16), true);
                     }}
                     className={`p-3.5 cursor-pointer transition border-l-4 ${
                       isSelected
@@ -533,7 +619,8 @@ function MapHomeContent() {
       <div className="relative flex-1 h-full overflow-hidden">
         <InteractiveMap
           center={mapCenter}
-          zoom={15}
+          zoom={mapZoom}
+          flyVersion={flyVersion}
           userLocation={location}
           toilets={toilets}
           nearestId={nearest?.id || null}
@@ -541,10 +628,18 @@ function MapHomeContent() {
           hoveredId={hoveredToiletId}
           showZoomControls
           zoomControlPosition="bottom-left"
-          onMoveEnd={(lng, lat, z, b) => {
+          onMoveEnd={(lng, lat, z, b, isUserAction) => {
             setQueryCenter([lng, lat]);
+            const nextZ = typeof z === 'number' ? z : mapZoomRef.current;
             if (typeof z === 'number') setMapZoom(z);
             if (b) setViewportBounds(b);
+            if (isUserAction) {
+              userMovedMapRef.current = true;
+              hasRealPositionRef.current = true;
+              saveMapViewport(lng, lat, nextZ);
+            } else if (hasRealPositionRef.current) {
+              saveMapViewport(lng, lat, nextZ);
+            }
           }}
           onSelectToilet={(t) => {
             if (selectedToilet?.id === t.id) {
@@ -606,8 +701,12 @@ function MapHomeContent() {
               onClick={handleLocateMe}
               className="h-10 px-3 bg-white/95 hover:bg-white backdrop-blur-md rounded-xl shadow-md border border-slate-200/90 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition"
             >
-              <Crosshair className="w-4 h-4 text-blue-600" />
-              我的定位
+              <Crosshair
+                className={`w-4 h-4 text-blue-600 ${
+                  locating && !location ? 'animate-spin' : ''
+                }`}
+              />
+              {locating && !location ? '定位中...' : '我的定位'}
             </button>
 
             <Link
@@ -811,7 +910,11 @@ function MapHomeContent() {
             aria-label="定位到我的位置"
             className="w-11 h-11 rounded-full bg-white/95 text-slate-700 shadow-lg border border-slate-200 flex items-center justify-center active:scale-95"
           >
-            <Crosshair className="w-5 h-5 text-blue-600" />
+            <Crosshair
+              className={`w-5 h-5 text-blue-600 ${
+                locating && !location ? 'animate-spin' : ''
+              }`}
+            />
           </button>
 
           <Link
@@ -860,8 +963,9 @@ function MapHomeContent() {
         onClose={() => setDrawerOpen(false)}
         toilets={toilets}
         onSelect={(t) => {
+          userMovedMapRef.current = true;
           setSelectedToilet(t);
-          setMapCenter([t.lng, t.lat]);
+          flyTo(t.lng, t.lat, Math.max(mapZoom, 16), true);
         }}
         onNavigate={(t) => {
           setDrawerOpen(false);
