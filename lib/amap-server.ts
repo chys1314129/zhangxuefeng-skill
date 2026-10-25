@@ -2,6 +2,12 @@
 // 服务端高德 Web服务 API 封装（动态读取运行时环境变量、带 QPS 退避重试与无外网超时保护）
 
 import type { MapBounds } from '@/types';
+import {
+  AMAP_VENUE_TYPES_BATCH_1,
+  AMAP_VENUE_TYPES_BATCH_2,
+  classifyAndParseVenuePoi,
+  type DiscoveredInferredVenue,
+} from '@/lib/inferredVenues';
 
 export interface ParsedAmapPOI {
   externalId: string;
@@ -298,3 +304,47 @@ export async function searchPlaceServer(
   }
   return [];
 }
+
+export async function searchInferredVenuesServer(opts: {
+  lng: number;
+  lat: number;
+  radius?: number;
+}): Promise<DiscoveredInferredVenue[]> {
+  const key = getServerAmapKey();
+  if (!key) return [];
+
+  const radius = Math.min(Math.max(opts.radius || 2500, 400), 8000);
+  const loc = `${opts.lng.toFixed(6)},${opts.lat.toFixed(6)}`;
+  const merged = new Map<string, DiscoveredInferredVenue>();
+
+  const collect = (data: any) => {
+    if (data?.status === '1' && Array.isArray(data.pois)) {
+      for (const raw of data.pois) {
+        const parsed = classifyAndParseVenuePoi(raw);
+        if (parsed && !merged.has(parsed.externalId)) {
+          merged.set(parsed.externalId, parsed);
+        }
+      }
+    }
+  };
+
+  // 2 并发请求覆盖全部 8 类场所（严格低于 3 QPS 限额）
+  const [res1, res2] = await Promise.all([
+    fetchAmapJson(
+      `https://restapi.amap.com/v3/place/around?key=${encodeURIComponent(key)}` +
+        `&location=${loc}&radius=${radius}&types=${encodeURIComponent(AMAP_VENUE_TYPES_BATCH_1)}` +
+        `&sortrule=distance&offset=25&page=1&extensions=base`
+    ),
+    fetchAmapJson(
+      `https://restapi.amap.com/v3/place/around?key=${encodeURIComponent(key)}` +
+        `&location=${loc}&radius=${radius}&types=${encodeURIComponent(AMAP_VENUE_TYPES_BATCH_2)}` +
+        `&sortrule=distance&offset=25&page=1&extensions=base`
+    ),
+  ]);
+
+  collect(res1);
+  collect(res2);
+
+  return Array.from(merged.values());
+}
+

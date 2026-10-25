@@ -365,9 +365,9 @@ function AddToiletContent() {
                 <>
                   <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
                   <div>
-                    <strong>已添加照片 → 提交审核后对所有人公开</strong>
+                    <strong>已添加照片 → 自动审核通过后立即全网公开</strong>
                     <p className="text-blue-600/90 mt-0.5">
-                      审核通过后全网用户均可看到此厕所；审核期间您自己可立即在地图上看到。
+                      清晰合规的实景照片将由系统秒级自动审核通过并对所有人公开显示！
                     </p>
                   </div>
                 </>
@@ -377,7 +377,7 @@ function AddToiletContent() {
                   <div>
                     <strong>未上传照片 → 仅你自己可见（私人标记）</strong>
                     <p className="text-purple-600/90 mt-0.5">
-                      他人无法看到此点位。以后路过时随时可在详情页补拍照片申请公开！
+                      他人无法看到此点位。以后路过时随时可在详情页补拍照片通过自动审核转为公开！
                     </p>
                   </div>
                 </>
@@ -396,9 +396,9 @@ function AddToiletContent() {
             }`}
           >
             {submitting
-              ? '正在保存...'
+              ? '正在自动审核并保存...'
               : hasPhotos
-                ? '📸 提交并等待管理员审核公开'
+                ? '📸 提交并通过自动审核公开'
                 : '🔒 保存为仅自己可见的私人标记'}
           </button>
         </div>

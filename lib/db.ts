@@ -8,11 +8,13 @@ import { getBoundingBox, haversineDistance } from '@/lib/geo';
 import { generateId } from '@/lib/utils';
 import type {
   AuthUser,
+  InferredCategory,
   ToiletItem,
   ToiletPhotoItem,
   ToiletSource,
   ToiletStatus,
   UserRole,
+  VerificationVoteType,
 } from '@/types';
 
 // 使用动态 require 避免客户端打包器解析 node:sqlite
@@ -54,6 +56,7 @@ export function getDb(): SQLiteDB {
 
   initSchema(db);
   seedDatabaseIfNeeded(db);
+  ensureSeedInferredExamples(db);
 
   globalThis.__zzcsSqliteDb = db;
   return db;
@@ -81,6 +84,8 @@ function initSchema(db: SQLiteDB) {
       source TEXT NOT NULL DEFAULT 'USER',
       status TEXT NOT NULL DEFAULT 'PRIVATE',
       amap_id TEXT UNIQUE,
+      inferred_category TEXT,
+      inferred_hidden INTEGER DEFAULT 0,
       is_free INTEGER DEFAULT 1,
       has_paper INTEGER,
       has_accessible INTEGER,
@@ -127,7 +132,33 @@ function initSchema(db: SQLiteDB) {
 
     CREATE INDEX IF NOT EXISTS idx_comments_toilet_created ON comments(toilet_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id);
+
+    CREATE TABLE IF NOT EXISTS toilet_verifications (
+      id TEXT PRIMARY KEY,
+      toilet_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      vote TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(toilet_id, user_id),
+      FOREIGN KEY (toilet_id) REFERENCES toilets(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_verifications_toilet ON toilet_verifications(toilet_id);
   `);
+
+  // 兼容已有线上持久化数据库的无损平滑加列迁移（绝不覆盖或丢失旧数据）
+  const cols = db.prepare(`PRAGMA table_info(toilets)`).all() as {
+    name: string;
+  }[];
+  const colNames = new Set(cols.map((c) => String(c.name)));
+  if (!colNames.has('inferred_category')) {
+    db.exec(`ALTER TABLE toilets ADD COLUMN inferred_category TEXT;`);
+  }
+  if (!colNames.has('inferred_hidden')) {
+    db.exec(`ALTER TABLE toilets ADD COLUMN inferred_hidden INTEGER DEFAULT 0;`);
+  }
 }
 
 function toNullableBool(val: unknown): boolean | null {
@@ -136,6 +167,12 @@ function toNullableBool(val: unknown): boolean | null {
 }
 
 function mapToiletRow(row: Record<string, any>, currentUserId?: string): ToiletItem {
+  const myVoteRaw = row.my_vote ? String(row.my_vote) : null;
+  const myVote: VerificationVoteType | null =
+    myVoteRaw === 'AVAILABLE' || myVoteRaw === 'UNAVAILABLE'
+      ? myVoteRaw
+      : null;
+
   return {
     id: String(row.id),
     name: String(row.name),
@@ -145,6 +182,11 @@ function mapToiletRow(row: Record<string, any>, currentUserId?: string): ToiletI
     source: (row.source as ToiletSource) || 'USER',
     status: (row.status as ToiletStatus) || 'PUBLIC',
     amapId: row.amap_id ?? null,
+    inferredCategory: (row.inferred_category as InferredCategory) ?? null,
+    inferredHidden: Number(row.inferred_hidden || 0) === 1,
+    availableVotes: Number(row.available_votes || 0),
+    unavailableVotes: Number(row.unavailable_votes || 0),
+    myVote,
     isFree: row.is_free === null || row.is_free === undefined ? true : Number(row.is_free) === 1,
     hasPaper: toNullableBool(row.has_paper),
     hasAccessible: toNullableBool(row.has_accessible),
@@ -600,6 +642,134 @@ function seedDatabaseIfNeeded(db: SQLiteDB) {
   }
 }
 
+function ensureSeedInferredExamples(db: SQLiteDB) {
+  const nowIso = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO toilets (
+      id, name, lng, lat, address, source, status, amap_id,
+      inferred_category, inferred_hidden, is_free, opening_hours,
+      description, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'INFERRED', 'PUBLIC', ?, ?, 0, 1, ?, ?, 'u_admin', ?, ?)
+  `);
+
+  const inferredSeeds: {
+    id: string;
+    name: string;
+    lng: number;
+    lat: number;
+    address: string;
+    amapId: string;
+    cat: InferredCategory;
+    hours: string;
+    desc: string;
+  }[] = [
+    {
+      id: 't_inf_bj_pumch',
+      name: '北京协和医院(东单院区)门诊大楼',
+      lng: 116.4158,
+      lat: 39.9128,
+      address: '北京市东城区帅府园一号',
+      amapId: 'inf_amap_seed_pumch',
+      cat: 'HOSPITAL',
+      hours: '门诊时段 / 急诊24h',
+      desc: '推测点位：医院、社区卫生服务中心及乡镇卫生院门诊一楼大厅与各楼层通常配有免费公共卫生间（未核实，以现场为准）。',
+    },
+    {
+      id: 't_inf_bj_wfj_dept',
+      name: '北京市百货大楼(王府井店)',
+      lng: 116.4106,
+      lat: 39.9136,
+      address: '北京市东城区王府井大街255号',
+      amapId: 'inf_amap_seed_wfj_dept',
+      cat: 'MALL',
+      hours: '约 10:00-22:00',
+      desc: '推测点位：商场与购物中心营业时间内各楼层（常见于 B1 或 2F 以上走廊尽头）一般设有免费洗手间（未核实，请注意营业时间）。',
+    },
+    {
+      id: 't_inf_bj_qianmen_kfc',
+      name: '肯德基(前门东大街餐厅)',
+      lng: 116.4018,
+      lat: 39.9008,
+      address: '北京市东城区前门东大街甲2号',
+      amapId: 'inf_amap_seed_qm_kfc',
+      cat: 'FAST_FOOD',
+      hours: '约 07:00-23:00',
+      desc: '推测点位：肯德基、麦当劳、星巴克等大型连锁门店店内或所在楼层通常设有洗手间（未核实，以门店现场为准）。',
+    },
+    {
+      id: 't_inf_bj_sinopec',
+      name: '中国石化(东单加油站)',
+      lng: 116.4195,
+      lat: 39.9072,
+      address: '北京市东城区东单北大街旁',
+      amapId: 'inf_amap_seed_sinopec_dd',
+      cat: 'GAS_STATION',
+      hours: '多数 24 小时',
+      desc: '推测点位：加油站便利店旁或站区侧方普遍配有免费对外卫生间，适合城郊与夜间应急（未核实，以站内规定为准）。',
+    },
+    {
+      id: 't_inf_bj_zhongshan_park',
+      name: '中山公园南门游客服务中心',
+      lng: 116.3935,
+      lat: 39.9082,
+      address: '北京市东城区中华路4号',
+      amapId: 'inf_amap_seed_zspark',
+      cat: 'PARK',
+      hours: '公园开放时段',
+      desc: '推测点位：开放式公园、市民广场及游客中心内部通常配有免费公厕（未核实，部分收费景区需注意检票口位置）。',
+    },
+    {
+      id: 't_inf_bj_grand_hotel',
+      name: '北京贵宾楼饭店(大堂)',
+      lng: 116.4052,
+      lat: 39.9086,
+      address: '北京市东城区东长安街35号',
+      amapId: 'inf_amap_seed_grandhotel',
+      cat: 'HOTEL',
+      hours: '大堂 24 小时',
+      desc: '推测点位：星级及中高端连锁酒店一楼大堂休息区旁通常设有公共洗手间，应急时可礼貌借用（未核实，以酒店现场为准）。',
+    },
+    {
+      id: 't_inf_bj_archive_lib',
+      name: '东城区政务服务中心/图书馆驿站',
+      lng: 116.4175,
+      lat: 39.9182,
+      address: '北京市东城区金宝街52号',
+      amapId: 'inf_amap_seed_dc_civic',
+      cat: 'GOV_CIVIC',
+      hours: '工作日 / 开放时段',
+      desc: '推测点位：政务服务大厅、党群驿站、公共图书馆及博物馆开放时段内通常配有干净免费卫生间（未核实，节假日或晚间可能闭馆）。',
+    },
+    {
+      id: 't_inf_bj_wumart',
+      name: '物美大卖场(崇文门店)',
+      lng: 116.4182,
+      lat: 39.8992,
+      address: '北京市东城区崇文门外大街',
+      amapId: 'inf_amap_seed_wumart_cwm',
+      cat: 'SUPERMARKET',
+      hours: '约 08:00-22:00',
+      desc: '推测点位：大中型综合超市服务台旁、收银区外侧通常可借用卫生间（未核实，小型便利店除外）。',
+    },
+  ];
+
+  for (const s of inferredSeeds) {
+    stmt.run(
+      s.id,
+      s.name,
+      s.lng,
+      s.lat,
+      s.address,
+      s.amapId,
+      s.cat,
+      s.hours,
+      s.desc,
+      nowIso,
+      nowIso
+    );
+  }
+}
+
 export function recalculateToiletStats(db: SQLiteDB, toiletId: string) {
   const row = db
     .prepare(
@@ -639,12 +809,55 @@ export interface QueryToiletsOptions {
   hasAccessible?: boolean;
   onlyMine?: boolean;
   keyword?: string;
+  includeInferred?: boolean;
+  inferredCategory?: InferredCategory | 'ALL' | null;
+}
+
+export function countConfirmedToiletsWithin(
+  lng: number,
+  lat: number,
+  meters = 500
+): number {
+  const db = getDb();
+  const box = getBoundingBox(lng, lat, meters);
+  const rows = db
+    .prepare(
+      `SELECT lng, lat FROM toilets
+       WHERE status = 'PUBLIC'
+         AND source != 'INFERRED'
+         AND lat >= ? AND lat <= ?
+         AND lng >= ? AND lng <= ?`
+    )
+    .all(box.minLat, box.maxLat, box.minLng, box.maxLng) as {
+    lng: number;
+    lat: number;
+  }[];
+
+  let count = 0;
+  for (const r of rows) {
+    if (haversineDistance(lng, lat, Number(r.lng), Number(r.lat)) <= meters) {
+      count++;
+    }
+  }
+  return count;
+}
+
+export function countRecentUserPhotos(userId: string, minutes = 10): number {
+  const db = getDb();
+  const sinceIso = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM toilet_photos WHERE uploaded_by = ? AND created_at >= ?`
+    )
+    .get(userId, sinceIso) as { cnt: number } | undefined;
+  return Number(row?.cnt || 0);
 }
 
 export function queryNearbyToilets(opts: QueryToiletsOptions): {
   toilets: ToiletItem[];
   total: number;
   hasMore: boolean;
+  confirmedWithin500m: number;
 } {
   const db = getDb();
   const {
@@ -653,14 +866,18 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     radius,
     bounds,
     page = 1,
-    limit = 300,
+    limit = 350,
     userId,
     isFree,
     hasPaper,
     hasAccessible,
     onlyMine,
     keyword,
+    includeInferred = false,
+    inferredCategory = null,
   } = opts;
+
+  const confirmedWithin500m = countConfirmedToiletsWithin(lng, lat, 500);
 
   const radiusBox = getBoundingBox(lng, lat, radius);
   const minLat = bounds ? Math.min(radiusBox.minLat, bounds.minLat) : radiusBox.minLat;
@@ -683,14 +900,31 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
 
   if (onlyMine && userId) {
     conditions.push('t.created_by = ?');
-    params.push(userId);
-  } else if (userId) {
-    conditions.push(
-      `(t.status = 'PUBLIC' OR (t.status IN ('PRIVATE', 'PENDING', 'REJECTED') AND t.created_by = ?))`
-    );
+    conditions.push(`t.source != 'INFERRED'`);
     params.push(userId);
   } else {
-    conditions.push(`t.status = 'PUBLIC'`);
+    if (userId) {
+      conditions.push(
+        `(t.status = 'PUBLIC' OR (t.status IN ('PRIVATE', 'PENDING', 'REJECTED') AND t.created_by = ?))`
+      );
+      params.push(userId);
+    } else {
+      conditions.push(`t.status = 'PUBLIC'`);
+    }
+
+    if (!includeInferred) {
+      conditions.push(`t.source != 'INFERRED'`);
+    } else {
+      conditions.push(
+        `(t.source != 'INFERRED' OR COALESCE(t.inferred_hidden, 0) = 0)`
+      );
+      if (inferredCategory && inferredCategory !== 'ALL') {
+        conditions.push(
+          `(t.source != 'INFERRED' OR t.inferred_category = ?)`
+        );
+        params.push(inferredCategory);
+      }
+    }
   }
 
   if (isFree) {
@@ -708,17 +942,27 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     params.push(kw, kw, kw);
   }
 
+  const myVoteSelect = userId
+    ? `(SELECT tv.vote FROM toilet_verifications tv WHERE tv.toilet_id = t.id AND tv.user_id = ? LIMIT 1) as my_vote`
+    : `NULL as my_vote`;
+  const selectParams: (string | number)[] = userId ? [userId, ...params] : params;
+
   const sql = `
     SELECT 
       t.*,
-      EXISTS(SELECT 1 FROM toilet_photos tp WHERE tp.toilet_id = t.id) as has_photo
+      EXISTS(SELECT 1 FROM toilet_photos tp WHERE tp.toilet_id = t.id) as has_photo,
+      (SELECT COUNT(*) FROM toilet_verifications tv WHERE tv.toilet_id = t.id AND tv.vote = 'AVAILABLE') as available_votes,
+      (SELECT COUNT(*) FROM toilet_verifications tv WHERE tv.toilet_id = t.id AND tv.vote = 'UNAVAILABLE') as unavailable_votes,
+      ${myVoteSelect}
     FROM toilets t
     WHERE ${conditions.join(' AND ')}
   `;
 
-  const rawRows = db.prepare(sql).all(...params) as Record<string, any>[];
+  const rawRows = db.prepare(sql).all(...selectParams) as Record<string, any>[];
 
-  const withinRadius: ToiletItem[] = [];
+  const confirmedCoords: { lng: number; lat: number }[] = [];
+  const candidates: ToiletItem[] = [];
+
   for (const row of rawRows) {
     const rLng = Number(row.lng);
     const rLat = Number(row.lat);
@@ -733,9 +977,20 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     if (dist <= radius || inViewport) {
       const item = mapToiletRow(row, userId);
       item.distance = dist;
-      withinRadius.push(item);
+      if (item.source !== 'INFERRED') {
+        confirmedCoords.push({ lng: rLng, lat: rLat });
+      }
+      candidates.push(item);
     }
   }
+
+  // 若某个推测场所 35 米内已经有明确确认的公厕 POI，则隐藏该重复推测点，避免重叠干扰
+  const withinRadius = candidates.filter((item) => {
+    if (item.source !== 'INFERRED') return true;
+    return !confirmedCoords.some(
+      (c) => haversineDistance(item.lng, item.lat, c.lng, c.lat) < 35
+    );
+  });
 
   withinRadius.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
 
@@ -746,6 +1001,7 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     toilets: paged,
     total: withinRadius.length,
     hasMore: offset + limit < withinRadius.length,
+    confirmedWithin500m,
   };
 }
 
@@ -755,18 +1011,26 @@ export function getToiletById(
   currentUserRole?: UserRole
 ): ToiletItem | null {
   const db = getDb();
+  const myVoteSelect = currentUserId
+    ? `(SELECT tv.vote FROM toilet_verifications tv WHERE tv.toilet_id = t.id AND tv.user_id = ? LIMIT 1) as my_vote`
+    : `NULL as my_vote`;
+  const getParams: string[] = currentUserId ? [currentUserId, id] : [id];
+
   const row = db
     .prepare(
       `SELECT 
          t.*,
          u.username as creator_username,
          u.nickname as creator_nickname,
-         EXISTS(SELECT 1 FROM toilet_photos tp WHERE tp.toilet_id = t.id) as has_photo
+         EXISTS(SELECT 1 FROM toilet_photos tp WHERE tp.toilet_id = t.id) as has_photo,
+         (SELECT COUNT(*) FROM toilet_verifications tv WHERE tv.toilet_id = t.id AND tv.vote = 'AVAILABLE') as available_votes,
+         (SELECT COUNT(*) FROM toilet_verifications tv WHERE tv.toilet_id = t.id AND tv.vote = 'UNAVAILABLE') as unavailable_votes,
+         ${myVoteSelect}
        FROM toilets t
        LEFT JOIN users u ON u.id = t.created_by
        WHERE t.id = ?`
     )
-    .get(id) as Record<string, any> | undefined;
+    .get(...getParams) as Record<string, any> | undefined;
 
   if (!row) return null;
 

@@ -3,6 +3,7 @@ import {
   locateByIpServer,
   reverseGeocodeServer,
   searchAroundToiletsServer,
+  searchInferredVenuesServer,
 } from '@/lib/amap-server';
 import type { MapBounds } from '@/types';
 
@@ -37,6 +38,12 @@ export async function GET(request: NextRequest) {
   }
 
   const radius = parseInt(searchParams.get('radius') || '3000', 10);
+
+  if (mode === 'inferred') {
+    const venues = await searchInferredVenuesServer({ lng, lat, radius });
+    return NextResponse.json({ code: 200, data: { venues } });
+  }
+
   const minLng = parseFloat(searchParams.get('minLng') || '');
   const minLat = parseFloat(searchParams.get('minLat') || '');
   const maxLng = parseFloat(searchParams.get('maxLng') || '');

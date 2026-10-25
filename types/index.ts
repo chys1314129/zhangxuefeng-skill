@@ -1,10 +1,22 @@
 export type UserRole = 'USER' | 'ADMIN' | 'SUPER_ADMIN';
 
-export type ToiletSource = 'AMAP' | 'USER';
+export type ToiletSource = 'AMAP' | 'USER' | 'INFERRED';
 
 export type ToiletStatus = 'PUBLIC' | 'PRIVATE' | 'PENDING' | 'REJECTED';
 
 export type MapEngineType = 'amap' | 'leaflet';
+
+export type InferredCategory =
+  | 'HOSPITAL'
+  | 'MALL'
+  | 'SUPERMARKET'
+  | 'PARK'
+  | 'GAS_STATION'
+  | 'FAST_FOOD'
+  | 'GOV_CIVIC'
+  | 'HOTEL';
+
+export type VerificationVoteType = 'AVAILABLE' | 'UNAVAILABLE';
 
 export interface MapBounds {
   minLng: number;
@@ -39,6 +51,11 @@ export interface ToiletItem {
   source: ToiletSource;
   status: ToiletStatus;
   amapId: string | null;
+  inferredCategory?: InferredCategory | null;
+  inferredHidden?: boolean;
+  availableVotes?: number;
+  unavailableVotes?: number;
+  myVote?: VerificationVoteType | null;
   isFree: boolean;
   hasPaper: boolean | null;
   hasAccessible: boolean | null;

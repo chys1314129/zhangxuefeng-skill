@@ -11,7 +11,9 @@ import {
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
+  AlertTriangle,
   ChevronDown,
+  Compass,
   Crosshair,
   List,
   MapPin,
@@ -43,8 +45,12 @@ import {
   estimateWalkMinutes,
   formatDistance,
 } from '@/lib/geo';
+import {
+  getInferredCategoryMeta,
+  INFERRED_CATEGORY_LIST,
+} from '@/lib/inferredVenues';
 import { PlaceSuggestion, searchPlaceClient } from '@/lib/mapService';
-import type { MapBounds, ToiletItem } from '@/types';
+import type { InferredCategory, MapBounds, ToiletItem } from '@/types';
 
 const FALLBACK_CENTER: [number, number] = [116.397428, 39.90923];
 const GENERIC_TOILET_QUERY_RE = /^(公共)?(厕所|公厕|洗手间|卫生间|wc|toilet)$/i;
@@ -78,14 +84,27 @@ function MapHomeContent() {
   const mapZoomRef = useRef<number>(15);
   mapZoomRef.current = mapZoom;
 
-  // 标记是否已脱离初始兜底点（防止未完成定位前把兜底北京坐标误写入会话缓存）
   const hasRealPositionRef = useRef<boolean>(hasUrlCoords);
-  // 标记用户是否已在当前会话恢复了浏览视野或主动拖拽/搜索了地图
   const restoredSessionRef = useRef<boolean>(false);
   const userMovedMapRef = useRef<boolean>(hasUrlCoords);
   const appliedAccuracyRef = useRef<number>(0);
 
   const [filters, setFilters] = useState<ToiletFilters>({});
+  // 「🧭 推测可借用」胶囊：支持 500m 确认公厕 < 2 个时智能自动开启 + 用户手动随时开关
+  const [manualInferredChoice, setManualInferredChoice] = useState<
+    boolean | null
+  >(null);
+  const [autoInferred, setAutoInferred] = useState<boolean>(false);
+  const [inferredCategory, setInferredCategory] = useState<
+    InferredCategory | 'ALL'
+  >('ALL');
+  const notifiedAutoInferredRef = useRef<boolean>(false);
+
+  const effectiveIncludeInferred =
+    manualInferredChoice !== null ? manualInferredChoice : autoInferred;
+  const isAutoEnabledMode =
+    manualInferredChoice === null && autoInferred === true;
+
   const [selectedToilet, setSelectedToilet] = useState<ToiletItem | null>(null);
   const [hoveredToiletId, setHoveredToiletId] = useState<string | null>(null);
   const [navTarget, setNavTarget] = useState<ToiletItem | null>(null);
@@ -138,7 +157,7 @@ function MapHomeContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 当真实定位到达（先 IP 城市级、再 GPS/Wi-Fi 街道级）时，若用户尚未手动移图或恢复会话，自动锁定到用户真实位置
+  // 当真实定位到达时，若用户尚未手动移图或恢复会话，自动锁定到用户真实位置
   useEffect(() => {
     if (!location || hasUrlCoords) return;
 
@@ -186,30 +205,85 @@ function MapHomeContent() {
     return 9500;
   }, [mapZoom]);
 
+  const combinedFilters = useMemo<ToiletFilters>(
+    () => ({
+      ...filters,
+      includeInferred: effectiveIncludeInferred,
+      inferredCategory,
+    }),
+    [filters, effectiveIncludeInferred, inferredCategory]
+  );
+
   const {
     toilets,
     nearest,
+    confirmedWithin500m,
+    hasCompletedInitialScan,
     isLoading,
     isSyncingPois,
+    isSyncingInferred,
     refreshAreaPois,
   } = useToilets({
     lng: queryCenter[0],
     lat: queryCenter[1],
     radius: dynamicRadius,
     bounds: viewportBounds,
-    filters,
+    filters: combinedFilters,
   });
+
+  // 选项B：当周边 500m 内已确认公厕 < 2 个且用户尚未手动设定时，自动启用「🧭 推测可借用」
+  useEffect(() => {
+    if (manualInferredChoice !== null) return;
+    if (!hasCompletedInitialScan || confirmedWithin500m === undefined) return;
+
+    if (confirmedWithin500m < 2) {
+      if (!autoInferred) {
+        setAutoInferred(true);
+        if (!notifiedAutoInferredRef.current) {
+          notifiedAutoInferredRef.current = true;
+          toast.info(
+            '附近 500 米已确认公厕较少，已自动开启「🧭 推测可借用」标出医院/商场/加油站等可能借厕点'
+          );
+        }
+      }
+    } else if (confirmedWithin500m >= 3 && autoInferred) {
+      setAutoInferred(false);
+    }
+  }, [
+    manualInferredChoice,
+    hasCompletedInitialScan,
+    confirmedWithin500m,
+    autoInferred,
+  ]);
+
+  const inferredCount = useMemo(
+    () => toilets.filter((t) => t.source === 'INFERRED').length,
+    [toilets]
+  );
+  const confirmedCount = toilets.length - inferredCount;
 
   const activeCardToilet =
     (selectedToilet && toilets.find((t) => t.id === selectedToilet.id)) ||
     nearest;
 
+  const handleToggleInferredCapsule = () => {
+    const next = !effectiveIncludeInferred;
+    setManualInferredChoice(next);
+    if (!next) {
+      setInferredCategory('ALL');
+    } else {
+      toast.info(
+        '琥珀色虚线标为「推测可能可借用」场所（未经核实），最终请看网友留言或现场传照片自动审核确认'
+      );
+    }
+  };
+
   const handleManualRefreshArea = async () => {
     const count = await refreshAreaPois();
     if (count > 0) {
-      toast.success(`已从高德地图补全当前区域公厕（共扫描 ${count} 个点位）`);
+      toast.success(`已从高德地图补全当前区域点位（共扫描 ${count} 个）`);
     } else {
-      toast.info('当前区域公厕已是最新数据');
+      toast.info('当前区域点位已是最新数据');
     }
   };
 
@@ -260,7 +334,7 @@ function MapHomeContent() {
 
   const handleUrgentClick = () => {
     if (!nearest) {
-      toast.error('当前视野暂无可用厕所，请点击「刷新此区域」或缩小地图');
+      toast.error('当前视野暂无可用点位，可开启「🧭 推测可借用」或缩小地图重试');
       return;
     }
     userMovedMapRef.current = true;
@@ -321,8 +395,8 @@ function MapHomeContent() {
       {/* ==================== 电脑端左侧固定可折叠侧边栏 (md 及以上显示) ==================== */}
       {sidebarOpen && (
         <aside className="hidden md:flex flex-col w-[360px] lg:w-[400px] shrink-0 h-full bg-white border-r border-slate-200 z-30 shadow-sm">
-          {/* 侧边栏头部：搜索 + 热门城市 + 筛选 */}
-          <div className="p-3.5 border-b border-slate-100 space-y-3">
+          {/* 侧边栏头部：搜索 + 热门城市 + 功能胶囊与筛选 */}
+          <div className="p-3.5 border-b border-slate-100 space-y-2.5">
             {/* 搜索框 */}
             <form onSubmit={handleSearchPlace} className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -357,7 +431,6 @@ function MapHomeContent() {
                 {searchingPlace ? '...' : '搜索'}
               </button>
 
-              {/* 桌面端搜索联想 */}
               {suggestions.length > 0 && (
                 <div className="absolute top-11 left-0 right-0 bg-white rounded-xl shadow-xl border border-slate-200 divide-y divide-slate-100 max-h-64 overflow-y-auto z-50">
                   {suggestions.map((s) => (
@@ -398,8 +471,24 @@ function MapHomeContent() {
               ))}
             </div>
 
-            {/* 属性筛选芯片 */}
+            {/* 核心功能胶囊 + 属性筛选芯片 */}
             <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={handleToggleInferredCapsule}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border transition ${
+                  effectiveIncludeInferred
+                    ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                    : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                }`}
+              >
+                <Compass className="w-3.5 h-3.5" />
+                <span>
+                  推测可借用
+                  {isAutoEnabledMode ? '(自动)' : ''}
+                </span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => toggleFilter('isFree')}
@@ -445,22 +534,72 @@ function MapHomeContent() {
                 🔒 我的标记
               </button>
             </div>
+
+            {/* 当开启「推测可借用」胶囊时：展示 8 类场所二级筛选与未核实显著提示 */}
+            {effectiveIncludeInferred && (
+              <div className="space-y-2 pt-0.5">
+                <div className="flex items-center gap-1 overflow-x-auto desktop-scrollbar pb-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setInferredCategory('ALL')}
+                    className={`shrink-0 px-2 py-1 rounded-md text-[11px] font-semibold transition ${
+                      inferredCategory === 'ALL'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-amber-50 text-amber-800 hover:bg-amber-100'
+                    }`}
+                  >
+                    全部8类
+                  </button>
+                  {INFERRED_CATEGORY_LIST.map((cat) => (
+                    <button
+                      key={cat.key}
+                      type="button"
+                      onClick={() => setInferredCategory(cat.key)}
+                      className={`shrink-0 px-2 py-1 rounded-md text-[11px] font-medium transition ${
+                        inferredCategory === cat.key
+                          ? 'bg-amber-600 text-white font-semibold'
+                          : 'bg-slate-100 text-slate-700 hover:bg-amber-50 hover:text-amber-800'
+                      }`}
+                    >
+                      {cat.emoji} {cat.shortLabel}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="rounded-xl bg-amber-50 border border-amber-200/90 px-2.5 py-2 flex items-start gap-1.5 text-[11px] text-amber-800 leading-relaxed">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>琥珀色虚线标仅为「可能存在」：</strong>
+                    医院、商场、加油站、快餐店等尚未经核实，最终确认请看网友留言或现场上传照片通过自动审核转正。
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 列表统计与同步状态 */}
           <div className="px-4 py-2.5 bg-slate-50/80 border-b border-slate-100 flex items-center justify-between text-xs">
             <span className="font-semibold text-slate-700">
-              当前视野共{' '}
-              <strong className="text-blue-600">{toilets.length}</strong> 个厕所
+              确切公厕{' '}
+              <strong className="text-blue-600">{confirmedCount}</strong>
+              {effectiveIncludeInferred && (
+                <>
+                  {' '}
+                  · 推测可借用{' '}
+                  <strong className="text-amber-600">{inferredCount}</strong>
+                </>
+              )}
             </span>
             <span className="text-slate-400 flex items-center gap-1">
               {isSyncingPois ? (
                 <>
                   <RefreshCw className="w-3 h-3 animate-spin text-blue-600" />
-                  <span className="text-blue-600">正在同步高德公厕...</span>
+                  <span className="text-blue-600">
+                    {isSyncingInferred ? '检索周边场所...' : '同步高德公厕...'}
+                  </span>
                 </>
               ) : (
-                '按距离由近到远'
+                '按距离排序'
               )}
             </span>
           </div>
@@ -477,9 +616,19 @@ function MapHomeContent() {
                 <p className="text-sm text-slate-500">
                   {isSyncingPois
                     ? '正在从高德地图深度扫描当前区域公厕...'
-                    : '当前地图视野内暂无符合筛选的厕所'}
+                    : '当前地图视野内暂无符合筛选的公厕'}
                 </p>
-                <div className="flex items-center justify-center gap-2">
+                <div className="flex items-center justify-center gap-2 flex-wrap">
+                  {!effectiveIncludeInferred && (
+                    <button
+                      type="button"
+                      onClick={handleToggleInferredCapsule}
+                      className="inline-flex items-center gap-1 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold"
+                    >
+                      <Compass className="w-3.5 h-3.5" />
+                      开启「推测可借用」场所
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleManualRefreshArea}
@@ -500,8 +649,14 @@ function MapHomeContent() {
                 </div>
               </div>
             ) : (
-              toilets.map((t, index) => {
+              toilets.map((t) => {
                 const isSelected = activeCardToilet?.id === t.id;
+                const isInferred = t.source === 'INFERRED';
+                const inferredMeta = isInferred
+                  ? getInferredCategoryMeta(t.inferredCategory)
+                  : null;
+                const isNearestConfirmed = nearest?.id === t.id && !isInferred;
+
                 return (
                   <div
                     key={t.id}
@@ -514,17 +669,30 @@ function MapHomeContent() {
                     }}
                     className={`p-3.5 cursor-pointer transition border-l-4 ${
                       isSelected
-                        ? 'bg-blue-50/60 border-l-blue-600'
+                        ? isInferred
+                          ? 'bg-amber-50/60 border-l-amber-500'
+                          : 'bg-blue-50/60 border-l-blue-600'
                         : 'bg-white hover:bg-slate-50 border-l-transparent'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5 flex-wrap mb-1">
-                          {index === 0 && (
-                            <span className="text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded">
-                              最近
-                            </span>
+                          {isInferred && inferredMeta ? (
+                            <>
+                              <span className="text-[10px] font-bold bg-amber-500 text-white px-1.5 py-0.5 rounded">
+                                🧭 推测可能
+                              </span>
+                              <span className="text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">
+                                {inferredMeta.emoji} {inferredMeta.shortLabel}
+                              </span>
+                            </>
+                          ) : (
+                            isNearestConfirmed && (
+                              <span className="text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded">
+                                最近
+                              </span>
+                            )
                           )}
                           {t.status === 'PRIVATE' && (
                             <span className="text-[10px] font-semibold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
@@ -546,11 +714,20 @@ function MapHomeContent() {
                           </h4>
                         </div>
 
-                        <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                        <div className="flex items-center gap-2 text-xs text-slate-500 mb-2 flex-wrap">
                           {t.distance !== undefined && (
-                            <span className="text-blue-600 font-semibold">
+                            <span
+                              className={`font-semibold ${
+                                isInferred ? 'text-amber-700' : 'text-blue-600'
+                              }`}
+                            >
                               {formatDistance(t.distance)} · 步行约
                               {estimateWalkMinutes(t.distance)}分钟
+                            </span>
+                          )}
+                          {(t.availableVotes || 0) > 0 && (
+                            <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                              ✅ {t.availableVotes}人亲测
                             </span>
                           )}
                           {t.avgRating > 0 && (
@@ -561,28 +738,34 @@ function MapHomeContent() {
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          {t.isFree && (
-                            <span className="text-[11px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded">
-                              免费
-                            </span>
-                          )}
-                          {t.hasPaper === true && (
-                            <span className="text-[11px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
-                              有纸
-                            </span>
-                          )}
-                          {t.hasPaper === false && (
-                            <span className="text-[11px] bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded">
-                              需自备纸
-                            </span>
-                          )}
-                          {t.hasAccessible && (
-                            <span className="text-[11px] bg-sky-50 text-sky-700 px-1.5 py-0.5 rounded">
-                              无障碍
-                            </span>
-                          )}
-                        </div>
+                        {isInferred ? (
+                          <p className="text-[11px] text-amber-700 line-clamp-1">
+                            ⚠️ 未核实场所 · 点击查看留言或上传实拍图自动转正
+                          </p>
+                        ) : (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {t.isFree && (
+                              <span className="text-[11px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded">
+                                免费
+                              </span>
+                            )}
+                            {t.hasPaper === true && (
+                              <span className="text-[11px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+                                有纸
+                              </span>
+                            )}
+                            {t.hasPaper === false && (
+                              <span className="text-[11px] bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded">
+                                需自备纸
+                              </span>
+                            )}
+                            {t.hasAccessible && (
+                              <span className="text-[11px] bg-sky-50 text-sky-700 px-1.5 py-0.5 rounded">
+                                无障碍
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -590,10 +773,20 @@ function MapHomeContent() {
                       <Link
                         href={`/toilet/${t.id}`}
                         onClick={(e) => e.stopPropagation()}
-                        className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium transition"
+                        className={`flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium transition ${
+                          isInferred
+                            ? 'bg-amber-100/70 hover:bg-amber-200/70 text-amber-900'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
                       >
-                        <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
-                        详情与留言 ({t.commentCount})
+                        <MessageSquare
+                          className={`w-3.5 h-3.5 ${
+                            isInferred ? 'text-amber-700' : 'text-blue-600'
+                          }`}
+                        />
+                        {isInferred
+                          ? `留言/传图确认 (${t.commentCount})`
+                          : `详情与留言 (${t.commentCount})`}
                       </Link>
                       <button
                         type="button"
@@ -601,7 +794,11 @@ function MapHomeContent() {
                           e.stopPropagation();
                           setNavTarget(t);
                         }}
-                        className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition"
+                        className={`flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-white text-xs font-semibold transition ${
+                          isInferred
+                            ? 'bg-amber-600 hover:bg-amber-700'
+                            : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
                       >
                         <Navigation className="w-3.5 h-3.5" />
                         高德导航
@@ -652,23 +849,45 @@ function MapHomeContent() {
 
         {/* 电脑端：侧边栏展开/收起切换按钮 + 顶部地图工具条 */}
         <div className="hidden md:flex items-center justify-between absolute top-3.5 left-3.5 right-3.5 z-30 pointer-events-none">
-          <button
-            type="button"
-            onClick={() => setSidebarOpen((v) => !v)}
-            className="pointer-events-auto h-10 px-3 bg-white/95 hover:bg-white backdrop-blur-md rounded-xl shadow-md border border-slate-200/90 flex items-center gap-1.5 text-xs font-semibold text-slate-700 transition"
-          >
-            {sidebarOpen ? (
-              <>
-                <PanelLeftClose className="w-4 h-4 text-slate-500" />
-                收起列表
-              </>
-            ) : (
-              <>
-                <PanelLeftOpen className="w-4 h-4 text-blue-600" />
-                展开列表 ({toilets.length})
-              </>
+          <div className="pointer-events-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen((v) => !v)}
+              className="h-10 px-3 bg-white/95 hover:bg-white backdrop-blur-md rounded-xl shadow-md border border-slate-200/90 flex items-center gap-1.5 text-xs font-semibold text-slate-700 transition"
+            >
+              {sidebarOpen ? (
+                <>
+                  <PanelLeftClose className="w-4 h-4 text-slate-500" />
+                  收起列表
+                </>
+              ) : (
+                <>
+                  <PanelLeftOpen className="w-4 h-4 text-blue-600" />
+                  展开列表 ({toilets.length})
+                </>
+              )}
+            </button>
+
+            {/* 侧边栏收起时也在地图左上提供「🧭 推测可借用」快捷胶囊 */}
+            {!sidebarOpen && (
+              <button
+                type="button"
+                onClick={handleToggleInferredCapsule}
+                className={`h-10 px-3.5 rounded-xl shadow-md border text-xs font-bold inline-flex items-center gap-1.5 transition ${
+                  effectiveIncludeInferred
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'bg-white/95 hover:bg-white text-amber-800 border-amber-300'
+                }`}
+              >
+                <Compass className="w-4 h-4" />
+                推测可借用
+                {isAutoEnabledMode ? '(自动)' : ''}
+                {effectiveIncludeInferred && inferredCount > 0
+                  ? ` (${inferredCount})`
+                  : ''}
+              </button>
             )}
-          </button>
+          </div>
 
           {/* 电脑端右上工具栏：紧急找厕 + 刷新此区域 + 我的定位 + 在此添加 */}
           <div className="pointer-events-auto flex items-center gap-2.5">
@@ -685,7 +904,7 @@ function MapHomeContent() {
               type="button"
               onClick={handleManualRefreshArea}
               disabled={isSyncingPois}
-              title="重新扫描高德地图当前视野内的全部公厕"
+              title="重新扫描高德地图当前视野内的全部公厕与场所"
               className="h-10 px-3 bg-white/95 hover:bg-white backdrop-blur-md rounded-xl shadow-md border border-slate-200/90 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition"
             >
               <RefreshCw
@@ -721,10 +940,13 @@ function MapHomeContent() {
 
         {/* 电脑端地图右下角选中点位预览卡 */}
         {activeCardToilet && (
-          <div className="hidden md:block absolute bottom-5 right-5 z-30 w-[360px]">
+          <div className="hidden md:block absolute bottom-5 right-5 z-30 w-[370px]">
             <NearestToiletCard
               toilet={activeCardToilet}
-              isNearest={nearest?.id === activeCardToilet.id}
+              isNearest={
+                nearest?.id === activeCardToilet.id &&
+                activeCardToilet.source !== 'INFERRED'
+              }
               onNavigate={(t) => setNavTarget(t)}
             />
           </div>
@@ -832,7 +1054,7 @@ function MapHomeContent() {
             </button>
           </div>
 
-          {/* 手机快捷筛选胶囊 */}
+          {/* 手机快捷功能胶囊栏（含 🧭 推测可借用） */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pointer-events-auto pb-0.5">
             <button
               type="button"
@@ -841,6 +1063,20 @@ function MapHomeContent() {
             >
               <List className="w-3.5 h-3.5" />
               附近 {isLoading && toilets.length === 0 ? '...' : toilets.length} 个
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleInferredCapsule}
+              className={`shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold shadow-sm border transition ${
+                effectiveIncludeInferred
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'bg-amber-50/95 text-amber-900 border-amber-300'
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5" />
+              推测可借用
+              {isAutoEnabledMode ? '(自动)' : ''}
             </button>
 
             <button
@@ -891,6 +1127,46 @@ function MapHomeContent() {
               🔒 我的标记
             </button>
           </div>
+
+          {/* 手机端开启「推测可借用」时的二级场所筛选胶囊 + 醒目风险提示条 */}
+          {effectiveIncludeInferred && (
+            <div className="space-y-1.5 pointer-events-auto">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                <button
+                  type="button"
+                  onClick={() => setInferredCategory('ALL')}
+                  className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-bold shadow-sm border ${
+                    inferredCategory === 'ALL'
+                      ? 'bg-amber-600 text-white border-amber-600'
+                      : 'bg-white/95 text-amber-900 border-amber-200'
+                  }`}
+                >
+                  全部8类
+                </button>
+                {INFERRED_CATEGORY_LIST.map((cat) => (
+                  <button
+                    key={cat.key}
+                    type="button"
+                    onClick={() => setInferredCategory(cat.key)}
+                    className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium shadow-sm border ${
+                      inferredCategory === cat.key
+                        ? 'bg-amber-600 text-white border-amber-600 font-bold'
+                        : 'bg-white/95 text-slate-700 border-slate-200/80'
+                    }`}
+                  >
+                    {cat.emoji} {cat.shortLabel}
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-xl bg-amber-50/95 backdrop-blur-md border border-amber-300/90 px-2.5 py-1.5 flex items-center gap-1.5 text-[11px] text-amber-900 shadow-sm">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span className="truncate">
+                  琥珀虚线标仅<strong>可能</strong>有厕所(未核实)，请看留言或传照片自动审核确认
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 手机端右侧大拇指热区悬浮按钮 */}
@@ -931,27 +1207,40 @@ function MapHomeContent() {
           {activeCardToilet ? (
             <NearestToiletCard
               toilet={activeCardToilet}
-              isNearest={nearest?.id === activeCardToilet.id}
+              isNearest={
+                nearest?.id === activeCardToilet.id &&
+                activeCardToilet.source !== 'INFERRED'
+              }
               onNavigate={(t) => setNavTarget(t)}
             />
           ) : (
-            <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-slate-200 p-4 flex items-center justify-between">
+            <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-slate-200 p-4 flex items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-semibold text-slate-800">
                   {isLoading || isSyncingPois
                     ? '正在从高德地图扫描周围公厕...'
-                    : '当前视野暂未收录符合条件的厕所'}
+                    : '当前视野暂未收录确切公厕'}
                 </p>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  发现超市/医院/公园隐藏卫生间？点击右侧加号随手标记
+                  可点击上方「🧭 推测可借用」查看医院/商场/加油站等可能借厕点
                 </p>
               </div>
-              <Link
-                href={`/add?lng=${queryCenter[0].toFixed(6)}&lat=${queryCenter[1].toFixed(6)}`}
-                className="px-3.5 py-2 bg-blue-600 text-white text-xs font-semibold rounded-xl shrink-0"
-              >
-                + 添加
-              </Link>
+              {!effectiveIncludeInferred ? (
+                <button
+                  type="button"
+                  onClick={handleToggleInferredCapsule}
+                  className="px-3 py-2 bg-amber-500 text-white text-xs font-bold rounded-xl shrink-0"
+                >
+                  🧭 推测借用
+                </button>
+              ) : (
+                <Link
+                  href={`/add?lng=${queryCenter[0].toFixed(6)}&lat=${queryCenter[1].toFixed(6)}`}
+                  className="px-3.5 py-2 bg-blue-600 text-white text-xs font-semibold rounded-xl shrink-0"
+                >
+                  + 添加
+                </Link>
+              )}
             </div>
           )}
         </div>

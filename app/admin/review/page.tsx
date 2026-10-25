@@ -131,10 +131,10 @@ export default function AdminReviewPage() {
           <div>
             <h1 className="text-lg font-extrabold text-slate-900 flex items-center gap-1.5">
               <ShieldCheck className="w-5 h-5 text-blue-600" />
-              拍照厕所审核队列
+              厕所照片自动审核与巡检中心
             </h1>
             <p className="text-xs text-slate-500">
-              核实实景图片真实性，通过后转为 PUBLIC 全网可见
+              清晰合规实拍图已启用自动审核秒过公开；可疑图片进入待审队列，管理员也可在「已通过」一键撤回
             </p>
           </div>
         </div>
@@ -254,10 +254,32 @@ export default function AdminReviewPage() {
                     type="button"
                     disabled={processingId === item.id}
                     onClick={() => handleApprove(item.id)}
-                    className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition"
+                    className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition"
                   >
                     <Check className="w-4 h-4" />
                     {processingId === item.id ? '处理中...' : '审核通过 · 设为公开'}
+                  </button>
+                </div>
+              )}
+
+              {item.status === 'PUBLIC' && (
+                <div className="flex items-center justify-between gap-2.5 pt-2 border-t border-slate-100">
+                  <span className="text-xs text-emerald-700 font-medium">
+                    ✅ 当前已在地图公开显示（含自动审核通过点位）
+                  </span>
+                  <button
+                    type="button"
+                    disabled={processingId === item.id}
+                    onClick={() => {
+                      setRejectReason(
+                        '事后巡检发现照片不符合卫生间实景规范，已撤回公开状态'
+                      );
+                      setRejectModalId(item.id);
+                    }}
+                    className="px-3 py-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold inline-flex items-center gap-1 transition"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    撤回公开 / 驳回
                   </button>
                 </div>
               )}

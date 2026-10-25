@@ -7,7 +7,9 @@ import useSWR from 'swr';
 import {
   AlertTriangle,
   ArrowLeft,
+  CheckCircle2,
   Clock,
+  Compass,
   Edit3,
   Lock,
   MapPin,
@@ -15,6 +17,7 @@ import {
   ShieldCheck,
   Star,
   Trash2,
+  XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import CommentBoard from '@/components/Comment/CommentBoard';
@@ -28,6 +31,7 @@ import {
   formatDistance,
   haversineDistance,
 } from '@/lib/geo';
+import { getInferredCategoryMeta } from '@/lib/inferredVenues';
 import type { ToiletItem } from '@/types';
 
 export default function ToiletDetailPage() {
@@ -40,6 +44,7 @@ export default function ToiletDetailPage() {
   const [navOpen, setNavOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
+  const [voting, setVoting] = useState(false);
   const [editForm, setEditForm] = useState({
     name: '',
     floor: '',
@@ -106,6 +111,44 @@ export default function ToiletDetailPage() {
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   const canManage = Boolean(toilet.isOwn || isAdmin);
+  const isInferred = toilet.source === 'INFERRED';
+  const inferredMeta = isInferred
+    ? getInferredCategoryMeta(toilet.inferredCategory)
+    : null;
+
+  const handleVoteVerification = async (
+    voteType: 'AVAILABLE' | 'UNAVAILABLE'
+  ) => {
+    if (!user) {
+      toast('请先登录再提交现场核实反馈', {
+        action: {
+          label: '去登录',
+          onClick: () => router.push('/login'),
+        },
+      });
+      return;
+    }
+
+    setVoting(true);
+    try {
+      const res = await authFetch(`/api/v1/toilets/${toilet.id}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vote: voteType }),
+      });
+      const json = await res.json();
+      if (json.code === 200) {
+        toast.success(json.data?.message || '反馈成功');
+        mutate();
+      } else {
+        toast.error(json.message || '提交反馈失败');
+      }
+    } catch {
+      toast.error('网络异常，请重试');
+    } finally {
+      setVoting(false);
+    }
+  };
 
   const openEditModal = () => {
     setEditForm({
@@ -218,6 +261,29 @@ export default function ToiletDetailPage() {
         </div>
       </div>
 
+      {/* 推测可借用场所醒目免责声明与核实指引横幅 */}
+      {isInferred && inferredMeta && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3 text-xs sm:text-sm text-amber-900 shadow-sm">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-extrabold text-amber-950 flex items-center gap-1.5 flex-wrap">
+              <span>⚠️ 推测可能可借用场所（尚未实拍确认）</span>
+              <span className="text-[11px] font-bold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full">
+                {inferredMeta.emoji} {inferredMeta.label}
+              </span>
+            </div>
+            <p className="text-amber-800 text-xs leading-relaxed">
+              此点位由系统根据场所类型智能标出，<strong>仅代表可能存在对外开放的免费卫生间</strong>，受营业时间与现场管理规定影响。最终确认请参考下方网友现场反馈与留言；如您亲临现场发现可用，<strong>上传一张实拍照片即可通过自动审核秒变「正式公开公厕」</strong>！
+            </p>
+            {toilet.inferredHidden && (
+              <p className="text-red-700 font-semibold text-xs pt-0.5">
+                🚫 当前已有多位用户反馈“无厕所或不对外”，系统已自动从地图隐藏该点位。
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 可见性状态横幅 */}
       {toilet.status === 'PRIVATE' && (
         <div className="bg-purple-50 border border-purple-200 rounded-2xl p-3.5 flex items-start gap-2.5 text-xs sm:text-sm text-purple-800">
@@ -267,16 +333,25 @@ export default function ToiletDetailPage() {
 
       {/* 手机端单列上下排布 / 电脑端左右双栏排布 (左：详情+地图+照片，右：实时留言板) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* 左栏：基础信息 + 迷你地图 + 实景照片 */}
+        {/* 左栏：基础信息 + 迷你地图 + 现场核实投票 + 实景照片 */}
         <div className="lg:col-span-5 lg:sticky lg:top-20 space-y-4">
-          <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 p-4 sm:p-5 space-y-4">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
             <div>
               <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                {toilet.status === 'PUBLIC' && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    {toilet.source === 'AMAP' ? '地图官方POI' : '已实景核验公开'}
+                {isInferred && inferredMeta ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-500 text-white px-2.5 py-0.5 rounded-full">
+                    <Compass className="w-3.5 h-3.5" />
+                    {inferredMeta.emoji} 推测可能·未核实 ({inferredMeta.shortLabel})
                   </span>
+                ) : (
+                  toilet.status === 'PUBLIC' && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      {toilet.source === 'AMAP'
+                        ? '地图官方POI'
+                        : '已通过实景审核公开'}
+                    </span>
+                  )
                 )}
                 {toilet.floor && (
                   <span className="text-[11px] font-bold bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-full">
@@ -383,20 +458,87 @@ export default function ToiletDetailPage() {
             <button
               type="button"
               onClick={() => setNavOpen(true)}
-              className="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-600/20 transition"
+              className={`w-full py-3.5 rounded-xl active:scale-[0.99] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md transition ${
+                isInferred
+                  ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20'
+                  : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/20'
+              }`}
             >
               <Navigation className="w-4 h-4" />
-              一键步行导航到这里
+              {isInferred
+                ? '应急步行导航到这里（未核实场所）'
+                : '一键步行导航到这里'}
             </button>
 
-            {/* 实景照片与补传组件 */}
+            {/* 现场真实性众包快捷核实栏 */}
+            <div
+              className={`rounded-xl p-3.5 border space-y-2.5 ${
+                isInferred
+                  ? 'bg-amber-50/70 border-amber-200'
+                  : 'bg-slate-50 border-slate-200/70'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-800">
+                  🤝 现场众包核实反馈
+                </span>
+                {isInferred && (
+                  <span className="text-[11px] text-amber-700">
+                    累计≥2人反馈无厕所将自动隐藏
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={voting}
+                  onClick={() => handleVoteVerification('AVAILABLE')}
+                  className={`py-2 px-2.5 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 transition ${
+                    toilet.myVote === 'AVAILABLE'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                      : 'bg-white hover:bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>亲测可用 ({toilet.availableVotes || 0})</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={voting}
+                  onClick={() => handleVoteVerification('UNAVAILABLE')}
+                  className={`py-2 px-2.5 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 transition ${
+                    toilet.myVote === 'UNAVAILABLE'
+                      ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                      : 'bg-white hover:bg-red-50 text-red-600 border-red-200'
+                  }`}
+                >
+                  <XCircle className="w-4 h-4 shrink-0" />
+                  <span>
+                    {isInferred ? '无厕所/不对外' : '暂不可用'} (
+                    {toilet.unavailableVotes || 0})
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* 实景照片与自动审核补传组件 */}
             <div className="pt-2 border-t border-slate-100">
-              <h3 className="text-sm font-bold text-slate-800 mb-2.5">
-                📷 实景照片 ({toilet.photos?.length || 0})
-              </h3>
+              <div className="flex items-center justify-between mb-2.5">
+                <h3 className="text-sm font-bold text-slate-800">
+                  📷 实景照片 ({toilet.photos?.length || 0})
+                </h3>
+                {isInferred && (
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                    传照片自动审核转正
+                  </span>
+                )}
+              </div>
               <PhotoGallery
                 toiletId={toilet.id}
                 status={toilet.status}
+                isInferred={isInferred}
                 isOwn={toilet.isOwn}
                 photos={toilet.photos || []}
                 onUploaded={() => mutate()}

@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthUser } from '@/lib/auth';
-import { getDb, getToiletById, queryNearbyToilets } from '@/lib/db';
+import { moderateUploadedPhotos } from '@/lib/autoModeration';
+import {
+  countRecentUserPhotos,
+  getDb,
+  getToiletById,
+  queryNearbyToilets,
+} from '@/lib/db';
 import { getBoundingBox, haversineDistance } from '@/lib/geo';
 import { saveUploadedPhoto } from '@/lib/storage';
 import { generateId } from '@/lib/utils';
+import type { InferredCategory } from '@/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +25,7 @@ export async function GET(request: NextRequest) {
     );
     const page = Math.max(parseInt(searchParams.get('page') || '1', 10), 1);
     const limit = Math.min(
-      Math.max(parseInt(searchParams.get('limit') || '300', 10), 1),
+      Math.max(parseInt(searchParams.get('limit') || '350', 10), 1),
       500
     );
 
@@ -39,6 +46,9 @@ export async function GET(request: NextRequest) {
     const hasAccessible = searchParams.get('hasAccessible') === 'true';
     const onlyMine = searchParams.get('onlyMine') === 'true';
     const keyword = searchParams.get('keyword') || '';
+    const includeInferred = searchParams.get('includeInferred') === 'true';
+    const rawCat = searchParams.get('inferredCategory') || 'ALL';
+    const inferredCategory = rawCat as InferredCategory | 'ALL';
 
     const user = await getAuthUser(request);
 
@@ -55,6 +65,8 @@ export async function GET(request: NextRequest) {
       hasAccessible,
       onlyMine,
       keyword,
+      includeInferred,
+      inferredCategory,
     });
 
     return NextResponse.json({
@@ -64,6 +76,7 @@ export async function GET(request: NextRequest) {
         total: result.total,
         page,
         hasMore: result.hasMore,
+        confirmedWithin500m: result.confirmedWithin500m,
       },
     });
   } catch (error) {
@@ -104,7 +117,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const parseOptionalTriBool = (val: FormDataEntryValue | null): number | null => {
+    const parseOptionalTriBool = (
+      val: FormDataEntryValue | null
+    ): number | null => {
       if (val === 'true') return 1;
       if (val === 'false') return 0;
       return null;
@@ -113,7 +128,8 @@ export async function POST(request: NextRequest) {
     const isFree = formData.get('isFree') === 'false' ? 0 : 1;
     const hasPaper = parseOptionalTriBool(formData.get('hasPaper'));
     const hasAccessible = parseOptionalTriBool(formData.get('hasAccessible'));
-    const floor = String(formData.get('floor') || '').trim().slice(0, 30) || null;
+    const floor =
+      String(formData.get('floor') || '').trim().slice(0, 30) || null;
     const openingHours =
       String(formData.get('openingHours') || '').trim().slice(0, 50) || null;
     const description =
@@ -121,17 +137,19 @@ export async function POST(request: NextRequest) {
 
     const rawPhotos = formData.getAll('photos');
     const photoFiles = rawPhotos.filter(
-      (f): f is File => typeof File !== 'undefined' && f instanceof File && f.size > 0
+      (f): f is File =>
+        typeof File !== 'undefined' && f instanceof File && f.size > 0
     );
 
     const db = getDb();
 
-    // 检查 50 米内是否已存在同名公开厕所
+    // 检查 50 米内是否已存在同名确认公开厕所
     const bbox = getBoundingBox(lng, lat, 60);
     const nearbySameName = db
       .prepare(
         `SELECT id, lng, lat FROM toilets
          WHERE status = 'PUBLIC'
+           AND source != 'INFERRED'
            AND name = ?
            AND lat BETWEEN ? AND ?
            AND lng BETWEEN ? AND ?`
@@ -154,16 +172,32 @@ export async function POST(request: NextRequest) {
     }
 
     const hasPhotos = photoFiles.length > 0;
-    const status = hasPhotos ? 'PENDING' : 'PRIVATE';
+    let status: 'PUBLIC' | 'PENDING' | 'PRIVATE' = 'PRIVATE';
+    let autoApproved = false;
+
+    if (hasPhotos) {
+      const recentCount = countRecentUserPhotos(user.id, 10);
+      const mod = await moderateUploadedPhotos(photoFiles, recentCount);
+      if (!mod.valid) {
+        return NextResponse.json(
+          { code: 400, message: mod.reason || '照片审核未通过，请重新选择实拍图' },
+          { status: 400 }
+        );
+      }
+      status = mod.nextStatus;
+      autoApproved = mod.autoApproved;
+    }
+
     const toiletId = generateId('t');
     const now = new Date().toISOString();
+    const verifiedAt = status === 'PUBLIC' ? now : null;
 
     db.prepare(
       `INSERT INTO toilets (
         id, name, lng, lat, address, source, status, amap_id,
         is_free, has_paper, has_accessible, opening_hours, floor, description,
         avg_rating, comment_count, verified_at, rejected_reason, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'USER', ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, NULL, NULL, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, 'USER', ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, NULL, ?, ?, ?)`
     ).run(
       toiletId,
       name,
@@ -177,6 +211,7 @@ export async function POST(request: NextRequest) {
       openingHours,
       floor,
       description,
+      verifiedAt,
       user.id,
       now,
       now
@@ -200,9 +235,12 @@ export async function POST(request: NextRequest) {
       code: 200,
       data: {
         toilet: created,
-        message: hasPhotos
-          ? '添加成功！照片审核通过后将对所有人公开显示'
-          : '已添加到你的私人标记（仅自己可见）。补充照片后可申请公开',
+        autoApproved,
+        message: !hasPhotos
+          ? '已添加到你的私人标记（仅自己可见）。补充实拍照片即可自动审核公开'
+          : autoApproved
+            ? '🎉 添加成功！实景照片已通过自动审核，现已对所有人公开显示'
+            : '添加成功！已进入人工复核队列，审核通过后将对所有人公开',
       },
     });
   } catch (error: any) {

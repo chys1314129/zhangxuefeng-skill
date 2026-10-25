@@ -2,6 +2,12 @@
 // 高德地图服务层（多维分类+关键词+视野矩形全覆盖公厕检索、QPS 保护、JS SDK / 服务端双回退、逆地理编码、一键高德步行导航）
 
 import type { MapBounds } from '@/types';
+import {
+  AMAP_VENUE_TYPES_BATCH_1,
+  AMAP_VENUE_TYPES_BATCH_2,
+  classifyAndParseVenuePoi,
+  type DiscoveredInferredVenue,
+} from '@/lib/inferredVenues';
 
 export interface DiscoveredPOI {
   externalId: string;
@@ -612,6 +618,117 @@ export async function locateByAmapIpClient(): Promise<{
   }
 
   return null;
+}
+
+/**
+ * 检索周边可能免费开放卫生间的 8 类场所（医院卫生院、商场、大中型超市、公园广场、加油站、连锁快餐咖啡、政务馆驿、中高端酒店大堂）
+ */
+export async function searchInferredVenuePOIsClient(
+  lng: number,
+  lat: number,
+  radius = 2500
+): Promise<DiscoveredInferredVenue[]> {
+  if (typeof window === 'undefined') return [];
+
+  const clampedRadius = Math.min(Math.max(radius, 400), 8000);
+  const loc = `${lng.toFixed(6)},${lat.toFixed(6)}`;
+  const seen = new Map<string, DiscoveredInferredVenue>();
+
+  const collectRaw = (pois: any[]) => {
+    if (!Array.isArray(pois)) return;
+    for (const raw of pois) {
+      const parsed = classifyAndParseVenuePoi(raw);
+      if (parsed && !seen.has(parsed.externalId)) {
+        seen.set(parsed.externalId, parsed);
+      }
+    }
+  };
+
+  let isJsApiKeyOnly = false;
+
+  if (AMAP_KEY) {
+    const [b1, b2] = await Promise.all([
+      fetchAmapRest(
+        `https://restapi.amap.com/v3/place/around?key=${encodeURIComponent(AMAP_KEY)}` +
+          `&location=${loc}&radius=${clampedRadius}&types=${encodeURIComponent(AMAP_VENUE_TYPES_BATCH_1)}` +
+          `&sortrule=distance&offset=25&page=1&extensions=base`
+      ),
+      fetchAmapRest(
+        `https://restapi.amap.com/v3/place/around?key=${encodeURIComponent(AMAP_KEY)}` +
+          `&location=${loc}&radius=${clampedRadius}&types=${encodeURIComponent(AMAP_VENUE_TYPES_BATCH_2)}` +
+          `&sortrule=distance&offset=25&page=1&extensions=base`
+      ),
+    ]);
+
+    if (b1?.infocode === '10009' || b2?.infocode === '10009') {
+      isJsApiKeyOnly = true;
+    } else {
+      collectRaw(b1?.pois || []);
+      collectRaw(b2?.pois || []);
+      if (seen.size > 0) {
+        return Array.from(seen.values());
+      }
+    }
+  }
+
+  // JS SDK 兜底
+  if (isJsApiKeyOnly || AMAP_KEY) {
+    const AMapGlobal = await ensureAmapJsSdk();
+    if (AMapGlobal?.PlaceSearch) {
+      const searchTypes = (typeStr: string) =>
+        new Promise<any[]>((resolve) => {
+          try {
+            const ps = new AMapGlobal.PlaceSearch({
+              type: typeStr,
+              pageSize: 25,
+              pageIndex: 1,
+            });
+            const timer = setTimeout(() => resolve([]), 4500);
+            ps.searchNearBy('', [lng, lat], clampedRadius, (status: string, result: any) => {
+              clearTimeout(timer);
+              if (status === 'complete' && result?.poiList?.pois) {
+                resolve(result.poiList.pois);
+              } else {
+                resolve([]);
+              }
+            });
+          } catch {
+            resolve([]);
+          }
+        });
+
+      const [s1, s2] = await Promise.all([
+        searchTypes(AMAP_VENUE_TYPES_BATCH_1),
+        searchTypes(AMAP_VENUE_TYPES_BATCH_2),
+      ]);
+      collectRaw(s1);
+      collectRaw(s2);
+      if (seen.size > 0) {
+        return Array.from(seen.values());
+      }
+    }
+  }
+
+  // 服务端代理兜底
+  try {
+    const res = await fetch(
+      `/api/v1/amap/around?mode=inferred&lng=${lng.toFixed(6)}&lat=${lat.toFixed(6)}&radius=${clampedRadius}`
+    );
+    if (res.ok) {
+      const json = await res.json();
+      if (Array.isArray(json?.data?.venues)) {
+        for (const v of json.data.venues as DiscoveredInferredVenue[]) {
+          if (v?.externalId && !seen.has(v.externalId)) {
+            seen.set(v.externalId, v);
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return Array.from(seen.values());
 }
 
 /**

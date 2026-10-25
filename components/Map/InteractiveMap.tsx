@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { formatDistance } from '@/lib/geo';
+import { getInferredCategoryMeta } from '@/lib/inferredVenues';
 import type { MapBounds, ToiletItem } from '@/types';
 
 const AMAP_KEY = process.env.NEXT_PUBLIC_AMAP_KEY || '';
@@ -79,22 +80,35 @@ function buildMarkerHtml(
   isHovered: boolean,
   currentZoom: number
 ): string {
+  const isInferred = toilet.source === 'INFERRED';
+  const inferredMeta = isInferred
+    ? getInferredCategoryMeta(toilet.inferredCategory)
+    : null;
   const distText =
     toilet.distance !== undefined ? formatDistance(toilet.distance) : '';
   const safeTitle = escapeHtml(
-    `${toilet.name}${distText ? ` (${distText})` : ''}`
+    `${isInferred ? '[推测可能] ' : ''}${toilet.name}${distText ? ` (${distText})` : ''}`
   );
 
   let bgColor = '#2563eb';
   let emoji = '🚾';
   let badge = '';
+  let borderCss = '2px solid #fff';
 
-  if (toilet.status === 'PRIVATE') {
+  if (isInferred && inferredMeta) {
+    bgColor = '#d97706'; // 琥珀警示色，与已确认蓝/青色严格区分
+    emoji = `${inferredMeta.emoji}`;
+    badge =
+      (toilet.availableVotes || 0) > 0
+        ? `?${toilet.availableVotes}人测`
+        : '?推测';
+    borderCss = '2px dashed #fef3c7';
+  } else if (toilet.status === 'PRIVATE') {
     bgColor = '#7c3aed';
     emoji = '🔒';
     badge = '私有';
   } else if (toilet.status === 'PENDING') {
-    bgColor = '#d97706';
+    bgColor = '#ea580c';
     emoji = '⏳';
     badge = '待审';
   } else if (toilet.source === 'AMAP') {
@@ -102,17 +116,18 @@ function buildMarkerHtml(
     emoji = '🚻';
   }
 
-  if (isNearest) {
+  if (isNearest && !isInferred) {
     bgColor = '#ef4444';
     emoji = '🚽';
     badge = '最近';
+    borderCss = '2px solid #fff';
   }
 
   const active = isSelected || isHovered;
 
   if (currentZoom <= 14 && !isNearest && !active) {
     return `
-      <div title="${safeTitle}" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:${bgColor};color:#fff;border:2px solid #fff;box-shadow:0 3px 10px rgba(15,23,42,0.22);font-size:13px;cursor:pointer;user-select:none;">
+      <div title="${safeTitle}" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:${bgColor};color:#fff;border:${borderCss};box-shadow:0 3px 10px rgba(15,23,42,0.22);font-size:13px;cursor:pointer;user-select:none;${isInferred ? 'opacity:0.93;' : ''}">
         <span>${emoji}</span>
       </div>
     `;
@@ -122,8 +137,10 @@ function buildMarkerHtml(
     ? 'transform: scale(1.16); z-index: 999;'
     : 'transform: scale(1);';
   const ringStyle = active
-    ? '0 0 0 4px rgba(37, 99, 235, 0.35), 0 8px 20px rgba(15, 23, 42, 0.28)'
-    : isNearest
+    ? isInferred
+      ? '0 0 0 4px rgba(217, 119, 6, 0.35), 0 8px 20px rgba(15, 23, 42, 0.28)'
+      : '0 0 0 4px rgba(37, 99, 235, 0.35), 0 8px 20px rgba(15, 23, 42, 0.28)'
+    : isNearest && !isInferred
       ? '0 0 0 5px rgba(239, 68, 68, 0.28), 0 6px 16px rgba(239, 68, 68, 0.35)'
       : '0 4px 12px rgba(15, 23, 42, 0.22)';
 
@@ -131,7 +148,7 @@ function buildMarkerHtml(
     <div title="${safeTitle}" style="display:flex;flex-direction:column;align-items:center;cursor:pointer;user-select:none;transition:transform 0.16s ease;${scaleStyle}">
       <div style="display:flex;align-items:center;gap:4px;background:${bgColor};color:#fff;padding:${
         isNearest || active ? '5px 10px' : '4px 8px'
-      };border-radius:9999px;border:2px solid #fff;box-shadow:${ringStyle};font-size:12px;font-weight:700;white-space:nowrap;">
+      };border-radius:9999px;border:${borderCss};box-shadow:${ringStyle};font-size:12px;font-weight:700;white-space:nowrap;">
         <span style="font-size:${isNearest ? '15px' : '13px'};line-height:1;">${emoji}</span>
         ${badge ? `<span>${badge}</span>` : ''}
         ${distText ? `<span style="opacity:0.95;font-weight:600;">${distText}</span>` : ''}

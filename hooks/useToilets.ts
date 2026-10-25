@@ -1,13 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { useAuth } from '@/hooks/useAuth';
+import type { DiscoveredInferredVenue } from '@/lib/inferredVenues';
 import {
   DiscoveredPOI,
+  searchInferredVenuePOIsClient,
   searchNearbyToiletPOIsClient,
 } from '@/lib/mapService';
-import type { MapBounds, ToiletItem } from '@/types';
+import type { InferredCategory, MapBounds, ToiletItem } from '@/types';
 
 export interface ToiletFilters {
   isFree?: boolean;
@@ -15,6 +17,8 @@ export interface ToiletFilters {
   hasAccessible?: boolean;
   onlyMine?: boolean;
   keyword?: string;
+  includeInferred?: boolean;
+  inferredCategory?: InferredCategory | 'ALL';
 }
 
 interface UseToiletsParams {
@@ -30,7 +34,6 @@ function makeGridKey(
   lat: number,
   bounds?: MapBounds | null
 ): string {
-  // 约 220m 网格粒度 + 视野跨度分桶，确保平移或缩放至新街区时自动补全周边公厕
   const gLng = Math.round(lng * 400);
   const gLat = Math.round(lat * 400);
   const span = bounds
@@ -48,7 +51,10 @@ export function useToilets({
 }: UseToiletsParams) {
   const { user, authFetch } = useAuth();
   const syncedCellsRef = useRef<Set<string>>(new Set());
+  const syncedInferredCellsRef = useRef<Set<string>>(new Set());
   const [isSyncingPois, setIsSyncingPois] = useState(false);
+  const [isSyncingInferred, setIsSyncingInferred] = useState(false);
+  const [hasCompletedInitialScan, setHasCompletedInitialScan] = useState(false);
 
   const queryParams = new URLSearchParams();
   if (lng !== undefined && lat !== undefined) {
@@ -66,6 +72,12 @@ export function useToilets({
     if (filters.hasPaper) queryParams.set('hasPaper', 'true');
     if (filters.hasAccessible) queryParams.set('hasAccessible', 'true');
     if (filters.onlyMine) queryParams.set('onlyMine', 'true');
+    if (filters.includeInferred) {
+      queryParams.set('includeInferred', 'true');
+      if (filters.inferredCategory && filters.inferredCategory !== 'ALL') {
+        queryParams.set('inferredCategory', filters.inferredCategory);
+      }
+    }
     if (filters.keyword?.trim()) {
       queryParams.set('keyword', filters.keyword.trim());
     }
@@ -84,7 +96,7 @@ export function useToilets({
     },
     {
       refreshInterval: 30000,
-      dedupingInterval: 1500,
+      dedupingInterval: 1200,
       keepPreviousData: true,
     }
   );
@@ -111,6 +123,28 @@ export function useToilets({
     [mutate]
   );
 
+  const syncInferredToServer = useCallback(
+    async (venues: DiscoveredInferredVenue[]) => {
+      if (!venues.length) return 0;
+      try {
+        const res = await fetch('/api/v1/toilets/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ inferredVenues: venues }),
+        });
+        const json = await res.json();
+        const syncedCount = Number(json?.data?.syncedInferred || 0);
+        if (syncedCount > 0) {
+          mutate();
+        }
+        return syncedCount;
+      } catch {
+        return 0;
+      }
+    },
+    [mutate]
+  );
+
   const runPoiDiscovery = useCallback(
     async (
       targetLng: number,
@@ -121,6 +155,7 @@ export function useToilets({
     ): Promise<number> => {
       const cellKey = makeGridKey(targetLng, targetLat, targetBounds);
       if (!force && syncedCellsRef.current.has(cellKey)) {
+        setHasCompletedInitialScan(true);
         return 0;
       }
 
@@ -136,20 +171,52 @@ export function useToilets({
           }
         );
 
-        // 仅当真正拿到 POI 数据后才记录该网格已完成，防止偶发网络抖动导致该区域永久漏加载
         if (allPois.length > 0) {
           syncedCellsRef.current.add(cellKey);
-          mutate();
+          await mutate();
         }
         return allPois.length;
       } finally {
         setIsSyncingPois(false);
+        setHasCompletedInitialScan(true);
       }
     },
     [mutate, syncWaveToServer]
   );
 
-  // 自动检索并融合当前视野内的高德真实公厕 POI
+  const runInferredDiscovery = useCallback(
+    async (
+      targetLng: number,
+      targetLat: number,
+      targetRadius: number,
+      force = false
+    ): Promise<number> => {
+      const cellKey = `${Math.round(targetLng * 300)}_${Math.round(targetLat * 300)}`;
+      if (!force && syncedInferredCellsRef.current.has(cellKey)) {
+        return 0;
+      }
+
+      setIsSyncingInferred(true);
+      try {
+        const venues = await searchInferredVenuePOIsClient(
+          targetLng,
+          targetLat,
+          Math.min(Math.max(targetRadius, 1800), 5000)
+        );
+        if (venues.length > 0) {
+          syncedInferredCellsRef.current.add(cellKey);
+          await syncInferredToServer(venues);
+          await mutate();
+        }
+        return venues.length;
+      } finally {
+        setIsSyncingInferred(false);
+      }
+    },
+    [mutate, syncInferredToServer]
+  );
+
+  // 自动检索当前视野内的高德确认公厕 POI
   useEffect(() => {
     if (lng === undefined || lat === undefined) return;
     if (filters.onlyMine) return;
@@ -177,22 +244,86 @@ export function useToilets({
     runPoiDiscovery,
   ]);
 
+  // 当「🧭 推测可借用」胶囊处于开启状态时，自动拉取周边 8 类潜在可借用场所（错峰 480ms 遵守高德 3 QPS）
+  useEffect(() => {
+    if (lng === undefined || lat === undefined) return;
+    if (!filters.includeInferred || filters.onlyMine) return;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void runInferredDiscovery(lng, lat, radius, false);
+      }
+    }, 480);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    lng,
+    lat,
+    radius,
+    filters.includeInferred,
+    filters.onlyMine,
+    runInferredDiscovery,
+  ]);
+
   const refreshAreaPois = useCallback(async () => {
     if (lng === undefined || lat === undefined) return 0;
     const count = await runPoiDiscovery(lng, lat, radius, bounds, true);
+    let infCount = 0;
+    if (filters.includeInferred) {
+      infCount = await runInferredDiscovery(lng, lat, radius, true);
+    }
     await mutate();
-    return count;
-  }, [lng, lat, radius, bounds, runPoiDiscovery, mutate]);
+    return count + infCount;
+  }, [
+    lng,
+    lat,
+    radius,
+    bounds,
+    filters.includeInferred,
+    runPoiDiscovery,
+    runInferredDiscovery,
+    mutate,
+  ]);
 
   const toilets: ToiletItem[] = data?.data?.toilets || [];
-  const nearest: ToiletItem | null = toilets.length > 0 ? toilets[0] : null;
+  const confirmedWithin500m: number | undefined =
+    typeof data?.data?.confirmedWithin500m === 'number'
+      ? data.data.confirmedWithin500m
+      : undefined;
+
+  // 优先推荐最近的确切公厕；若附近完全没有确切公厕，才兜底返回最近的推测可借用场所
+  const nearestConfirmed: ToiletItem | null = useMemo(
+    () => toilets.find((t) => t.source !== 'INFERRED') || null,
+    [toilets]
+  );
+
+  const nearest: ToiletItem | null = useMemo(() => {
+    if (
+      nearestConfirmed &&
+      (nearestConfirmed.distance === undefined ||
+        nearestConfirmed.distance <= 800 ||
+        !toilets[0] ||
+        toilets[0].source !== 'INFERRED')
+    ) {
+      return nearestConfirmed;
+    }
+    return toilets[0] || nearestConfirmed || null;
+  }, [nearestConfirmed, toilets]);
 
   return {
     toilets,
     nearest,
+    nearestConfirmed,
+    confirmedWithin500m,
+    hasCompletedInitialScan,
     total: data?.data?.total || toilets.length,
     isLoading,
-    isSyncingPois,
+    isSyncingPois: isSyncingPois || isSyncingInferred,
+    isSyncingInferred,
     error,
     mutate,
     refreshAreaPois,

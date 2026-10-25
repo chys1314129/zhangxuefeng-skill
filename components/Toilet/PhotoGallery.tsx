@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Camera, X, ZoomIn } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Camera, Sparkles, X, ZoomIn } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
 import { compressImage } from '@/lib/imageUtils';
@@ -10,6 +11,7 @@ import type { ToiletPhotoItem, ToiletStatus } from '@/types';
 interface PhotoGalleryProps {
   toiletId: string;
   status: ToiletStatus;
+  isInferred?: boolean;
   isOwn?: boolean;
   photos: ToiletPhotoItem[];
   onUploaded?: () => void;
@@ -18,10 +20,12 @@ interface PhotoGalleryProps {
 export default function PhotoGallery({
   toiletId,
   status,
+  isInferred = false,
   isOwn,
   photos,
   onUploaded,
 }: PhotoGalleryProps) {
+  const router = useRouter();
   const { user, authFetch } = useAuth();
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -38,7 +42,11 @@ export default function PhotoGallery({
 
   const canUpload =
     Boolean(user) &&
-    (status === 'PUBLIC' || isOwn || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN');
+    (status === 'PUBLIC' ||
+      isInferred ||
+      isOwn ||
+      user?.role === 'ADMIN' ||
+      user?.role === 'SUPER_ADMIN');
 
   const handleSupplementUpload = async (
     e: React.ChangeEvent<HTMLInputElement>
@@ -103,37 +111,58 @@ export default function PhotoGallery({
           ))}
         </div>
       ) : (
-        <div className="rounded-xl bg-slate-100 border border-dashed border-slate-300 py-8 px-4 text-center">
-          <div className="text-3xl mb-1.5">📷</div>
-          <p className="text-sm text-slate-600 font-medium">暂无实景照片</p>
+        <div
+          className={`rounded-xl border border-dashed py-7 px-4 text-center ${
+            isInferred
+              ? 'bg-amber-50/70 border-amber-300'
+              : 'bg-slate-100 border-slate-300'
+          }`}
+        >
+          <div className="text-3xl mb-1.5">{isInferred ? '🧭' : '📷'}</div>
+          <p className="text-sm text-slate-700 font-semibold">
+            {isInferred ? '尚未有现场实拍确认图' : '暂无实景照片'}
+          </p>
+          {isInferred && (
+            <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+              随手拍一张现场卫生间门牌或实景图上传，系统自动审核通过后将立即转正为「正式公开厕所」！
+            </p>
+          )}
           {status === 'PRIVATE' && isOwn && (
             <p className="text-xs text-purple-600 mt-1">
-              当前仅你自己可见 · 补充照片后即可提交审核对所有人公开！
+              当前仅你自己可见 · 补充清晰照片即可通过自动审核对所有人公开！
             </p>
           )}
         </div>
       )}
 
-      {canUpload && (
+      {canUpload ? (
         <div>
           <button
             type="button"
             disabled={uploading}
             onClick={() => fileInputRef.current?.click()}
-            className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-semibold transition ${
-              status === 'PRIVATE' || status === 'REJECTED'
-                ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-xs'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition shadow-sm ${
+              isInferred
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                : status === 'PRIVATE' || status === 'REJECTED'
+                  ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
             }`}
           >
-            <Camera className="w-4 h-4" />
+            {isInferred ? (
+              <Sparkles className="w-4 h-4" />
+            ) : (
+              <Camera className="w-4 h-4" />
+            )}
             {uploading
-              ? '正在上传...'
-              : status === 'PRIVATE'
-                ? '📸 补拍实景照片 · 申请转为公开厕所'
-                : status === 'REJECTED'
-                  ? '📸 重新上传照片 · 再次提交审核'
-                  : '补充上传实景图'}
+              ? '正在自动审核并上传...'
+              : isInferred
+                ? '📸 上传现场卫生间实拍图 · 自动审核秒转正'
+                : status === 'PRIVATE'
+                  ? '📸 补拍实景照片 · 自动审核转为公开厕所'
+                  : status === 'REJECTED'
+                    ? '📸 重新上传清晰照片 · 自动审核公开'
+                    : '补充上传现场实拍图'}
           </button>
           <input
             ref={fileInputRef}
@@ -144,6 +173,18 @@ export default function PhotoGallery({
             className="hidden"
           />
         </div>
+      ) : (
+        !user &&
+        isInferred && (
+          <button
+            type="button"
+            onClick={() => router.push('/login')}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 transition"
+          >
+            <Camera className="w-4 h-4" />
+            登录后上传现场实拍图，自动审核转正为公开公厕
+          </button>
+        )
       )}
 
       {/* 大图预览弹窗 */}

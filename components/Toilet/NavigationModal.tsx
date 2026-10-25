@@ -1,9 +1,16 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Copy, ExternalLink, Navigation, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Copy,
+  ExternalLink,
+  Navigation,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { estimateWalkMinutes, formatDistance } from '@/lib/geo';
+import { getInferredCategoryMeta } from '@/lib/inferredVenues';
 import { buildAMapWalkUrl } from '@/lib/mapService';
 import type { ToiletItem } from '@/types';
 
@@ -28,6 +35,11 @@ export default function NavigationModal({
   }, [toilet, onClose]);
 
   if (!toilet) return null;
+
+  const isInferred = toilet.source === 'INFERRED';
+  const inferredMeta = isInferred
+    ? getInferredCategoryMeta(toilet.inferredCategory)
+    : null;
 
   const amapUrl = buildAMapWalkUrl({
     toLng: toilet.lng,
@@ -60,9 +72,17 @@ export default function NavigationModal({
       >
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full mb-1.5">
+            <div
+              className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full mb-1.5 ${
+                isInferred
+                  ? 'text-amber-800 bg-amber-100'
+                  : 'text-blue-600 bg-blue-50'
+              }`}
+            >
               <Navigation className="w-3.5 h-3.5" />
-              高德步行导航前往
+              {isInferred && inferredMeta
+                ? `${inferredMeta.emoji} 推测可借用 · 高德步行导航`
+                : '高德步行导航前往'}
             </div>
             <h3 className="text-lg font-bold text-slate-900 leading-snug">
               {toilet.name}
@@ -77,6 +97,17 @@ export default function NavigationModal({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {isInferred && (
+          <div className="mb-3 rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-start gap-2 text-xs text-amber-800 leading-relaxed">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <span>
+              <strong>未核实风险提示：</strong>
+              此处为系统根据场所类型推测<strong>可能</strong>
+              有免费卫生间，尚未实拍确认，请注意场所营业时间。到场如确认可用，欢迎随手上传一张照片自动转正！
+            </span>
+          </div>
+        )}
 
         <div className="bg-slate-50 rounded-xl p-3.5 mb-4 space-y-1.5 text-sm">
           {toilet.distance !== undefined && (
@@ -112,7 +143,11 @@ export default function NavigationModal({
             target="_blank"
             rel="noopener noreferrer"
             onClick={onClose}
-            className="w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition shadow-sm"
+            className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl text-white font-semibold text-sm transition shadow-sm ${
+              isInferred
+                ? 'bg-amber-600 hover:bg-amber-700'
+                : 'bg-blue-600 hover:bg-blue-700'
+            }`}
           >
             <span className="flex items-center gap-2">
               <span className="text-base">🗺️</span>

@@ -18,7 +18,9 @@ export async function GET(request: NextRequest) {
 
   const db = getDb();
   const whereClause =
-    status === 'ALL' ? `WHERE t.source = 'USER'` : `WHERE t.status = ?`;
+    status === 'ALL'
+      ? `WHERE t.source = 'USER'`
+      : `WHERE t.status = ? AND t.source = 'USER'`;
   const params = status === 'ALL' ? [] : [status];
 
   const rows = db
