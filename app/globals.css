@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import 'leaflet/dist/leaflet.css';
+
+html,
+body {
+  height: 100%;
+  background-color: #f8fafc;
+  color: #0f172a;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 移动端防止 iOS Safari 点击输入框时强制放大页面，电脑端保持紧凑字号 */
+@media (max-width: 767px) {
+  input[type='text'],
+  input[type='password'],
+  input[type='search'],
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+/* 移除 Leaflet 默认方框背景，使用自定义圆角胶囊标记 */
+.zzcs-clean-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.leaflet-container {
+  font-family: inherit;
+  z-index: 1;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 电脑端侧边栏精致细滚动条 */
+@media (min-width: 768px) {
+  .desktop-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .desktop-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .desktop-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.45);
+    border-radius: 9999px;
+  }
+  .desktop-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.7);
+  }
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

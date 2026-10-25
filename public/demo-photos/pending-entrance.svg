@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520">
+  <rect width="800" height="520" fill="#fef3c7"/>
+  <rect x="90" y="65" width="620" height="390" rx="22" fill="#fffbeb" stroke="#f59e0b" stroke-width="4"/>
+  <rect x="130" y="105" width="540" height="72" rx="12" fill="#d97706"/>
+  <text x="400" y="150" font-family="sans-serif" font-size="28" font-weight="bold" fill="#ffffff" text-anchor="middle">待审核实拍 · 咖啡馆二楼走廊尽头洗手间</text>
+  <rect x="170" y="205" width="210" height="210" rx="14" fill="#ffffff" stroke="#fcd34d" stroke-width="3"/>
+  <text x="275" y="280" font-family="sans-serif" font-size="52" text-anchor="middle">🚻</text>
+  <text x="275" y="345" font-family="sans-serif" font-size="20" font-weight="bold" fill="#78350f" text-anchor="middle">独立性别友好隔间</text>
+  <text x="275" y="380" font-family="sans-serif" font-size="16" fill="#92400e" text-anchor="middle">进门右转上2楼</text>
+  <rect x="415" y="205" width="240" height="210" rx="14" fill="#ffffff" stroke="#fcd34d" stroke-width="3"/>
+  <text x="535" y="265" font-family="sans-serif" font-size="20" font-weight="bold" fill="#78350f" text-anchor="middle">用户上传门牌指引</text>
+  <text x="535" y="308" font-family="sans-serif" font-size="17" fill="#92400e" text-anchor="middle">✓ 无需消费可用</text>
+  <text x="535" y="342" font-family="sans-serif" font-size="17" fill="#92400e" text-anchor="middle">✓ 备有擦手纸与卷纸</text>
+  <text x="535" y="376" font-family="sans-serif" font-size="17" fill="#92400e" text-anchor="middle">营业时间 08:00 - 22:30</text>
+</svg>

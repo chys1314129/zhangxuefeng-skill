@@ -1,0 +1,113 @@
+// prisma/schema.prisma
+// 生产环境 PostgreSQL + PostGIS Schema（本地预览环境默认由 lib/db.ts 使用内置 SQLite 自动驱动）
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum ToiletSource {
+  AMAP
+  USER
+}
+
+enum ToiletStatus {
+  PUBLIC
+  PRIVATE
+  PENDING
+  REJECTED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  passwordHash String    @map("password_hash")
+  nickname     String?
+  avatarUrl    String?   @map("avatar_url")
+  role         UserRole  @default(USER)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  toilets      Toilet[]
+  comments     Comment[]
+  photos       ToiletPhoto[]
+
+  @@map("users")
+}
+
+model Toilet {
+  id             String        @id @default(cuid())
+  name           String
+  lng            Float
+  lat            Float
+  address        String?
+  source         ToiletSource  @default(USER)
+  status         ToiletStatus  @default(PRIVATE)
+  amapId         String?       @unique @map("amap_id")
+
+  isFree         Boolean?      @default(true) @map("is_free")
+  hasPaper       Boolean?      @map("has_paper")
+  hasAccessible  Boolean?      @map("has_accessible")
+  openingHours   String?       @map("opening_hours")
+  floor          String?
+  description    String?
+
+  avgRating      Float?        @default(0) @map("avg_rating")
+  commentCount   Int           @default(0) @map("comment_count")
+
+  verifiedAt     DateTime?     @map("verified_at")
+  rejectedReason String?       @map("rejected_reason")
+
+  createdBy      String        @map("created_by")
+  creator        User          @relation(fields: [createdBy], references: [id])
+  photos         ToiletPhoto[]
+  comments       Comment[]
+
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  @@index([lng, lat])
+  @@index([status])
+  @@index([createdBy])
+  @@map("toilets")
+}
+
+model ToiletPhoto {
+  id         String   @id @default(cuid())
+  toiletId   String   @map("toilet_id")
+  toilet     Toilet   @relation(fields: [toiletId], references: [id], onDelete: Cascade)
+  photoUrl   String   @map("photo_url")
+  uploadedBy String   @map("uploaded_by")
+  uploader   User     @relation(fields: [uploadedBy], references: [id])
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("toilet_photos")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  toiletId  String   @map("toilet_id")
+  toilet    Toilet   @relation(fields: [toiletId], references: [id], onDelete: Cascade)
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  content   String   @db.VarChar(500)
+  rating    Int?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([toiletId, createdAt(sort: Desc)])
+  @@map("comments")
+}

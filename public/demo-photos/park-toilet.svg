@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e0f2fe"/>
+      <stop offset="100%" stop-color="#f0fdf4"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="520" fill="url(#sky)"/>
+  <circle cx="130" cy="110" r="45" fill="#fde047" opacity="0.8"/>
+  <ellipse cx="660" cy="390" rx="190" ry="70" fill="#bbf7d0"/>
+  <ellipse cx="160" cy="400" rx="210" ry="75" fill="#86efac"/>
+  <rect x="190" y="170" width="420" height="250" rx="16" fill="#ffffff" stroke="#94a3b8" stroke-width="4"/>
+  <polygon points="160,175 400,90 640,175" fill="#0f766e"/>
+  <rect x="275" y="195" width="250" height="48" rx="10" fill="#0d9488"/>
+  <text x="400" y="227" font-family="sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">市政三星级公共厕所</text>
+  <rect x="245" y="268" width="120" height="152" rx="8" fill="#cbd5e1"/>
+  <rect x="435" y="268" width="120" height="152" rx="8" fill="#cbd5e1"/>
+  <text x="305" y="348" font-family="sans-serif" font-size="22" font-weight="bold" fill="#1e293b" text-anchor="middle">男 MAN</text>
+  <text x="495" y="348" font-family="sans-serif" font-size="22" font-weight="bold" fill="#1e293b" text-anchor="middle">女 WOMAN</text>
+  <rect x="290" y="440" width="220" height="36" rx="18" fill="#16a34a"/>
+  <text x="400" y="464" font-family="sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">24小时免费开放 · 已实景核验</text>
+</svg>
