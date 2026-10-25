@@ -70,6 +70,9 @@ export interface ToiletItem {
   createdAt: string;
   updatedAt: string;
   distance?: number;
+  straightDistance?: number;
+  walkDuration?: number;
+  isRouteDistance?: boolean;
   isOwn?: boolean;
   hasPhoto?: boolean;
   photos?: ToiletPhotoItem[];

@@ -27,11 +27,15 @@ import PhotoGallery from '@/components/Toilet/PhotoGallery';
 import { useAuth } from '@/hooks/useAuth';
 import { useUserLocation } from '@/hooks/useUserLocation';
 import {
-  estimateWalkMinutes,
   formatDistance,
   haversineDistance,
 } from '@/lib/geo';
 import { getInferredCategoryMeta } from '@/lib/inferredVenues';
+import {
+  fetchShortestWalkingRouteClient,
+  formatWalkMinutes,
+  type WalkingRouteDetail,
+} from '@/lib/routeService';
 import type { ToiletItem } from '@/types';
 
 export default function ToiletDetailPage() {
@@ -45,6 +49,9 @@ export default function ToiletDetailPage() {
   const [editing, setEditing] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [voting, setVoting] = useState(false);
+  const [routeDetail, setRouteDetail] = useState<WalkingRouteDetail | null>(
+    null
+  );
   const [editForm, setEditForm] = useState({
     name: '',
     floor: '',
@@ -73,6 +80,28 @@ export default function ToiletDetailPage() {
   );
 
   const toilet: ToiletItem | null = data?.data?.toilet || null;
+
+  useEffect(() => {
+    setRouteDetail(null);
+    if (!toilet || !location || !location.inChina) return;
+
+    let cancelled = false;
+    fetchShortestWalkingRouteClient(
+      location.lng,
+      location.lat,
+      toilet.lng,
+      toilet.lat,
+      toilet.id
+    ).then((res) => {
+      if (!cancelled && res) {
+        setRouteDetail(res);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [toilet?.id, toilet?.lng, toilet?.lat, location?.lng, location?.lat, location?.inChina]);
 
   if (isLoading) {
     return (
@@ -104,10 +133,19 @@ export default function ToiletDetailPage() {
     );
   }
 
-  const distance = location
+  const straightDist = location
     ? haversineDistance(location.lng, location.lat, toilet.lng, toilet.lat)
     : undefined;
-  const toiletWithDist = { ...toilet, distance };
+  const distance = routeDetail?.distance ?? straightDist;
+  const walkDuration = routeDetail?.duration;
+  const isRouteDistance = Boolean(routeDetail);
+  const toiletWithDist: ToiletItem = {
+    ...toilet,
+    straightDistance: straightDist,
+    distance,
+    walkDuration,
+    isRouteDistance,
+  };
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   const canManage = Boolean(toilet.isOwn || isAdmin);
@@ -378,8 +416,9 @@ export default function ToiletDetailPage() {
 
                 {distance !== undefined && location?.inChina && (
                   <span className="text-blue-600 font-semibold">
-                    距你 {formatDistance(distance)} · 步行约{' '}
-                    {estimateWalkMinutes(distance)} 分钟
+                    {isRouteDistance ? '最短步行路线 ' : '参考距离 '}
+                    {formatDistance(distance)} · 步行约{' '}
+                    {formatWalkMinutes(walkDuration, distance)} 分钟
                   </span>
                 )}
               </div>
@@ -448,7 +487,13 @@ export default function ToiletDetailPage() {
               <InteractiveMap
                 center={[toilet.lng, toilet.lat]}
                 zoom={16}
-                toilets={[toilet]}
+                userLocation={location}
+                routePath={
+                  routeDetail && routeDetail.polyline.length >= 2
+                    ? routeDetail.polyline
+                    : null
+                }
+                toilets={[toiletWithDist]}
                 nearestId={toilet.id}
                 showZoomControls={false}
               />

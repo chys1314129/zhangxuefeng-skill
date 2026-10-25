@@ -10,8 +10,9 @@ import {
   Star,
   X,
 } from 'lucide-react';
-import { estimateWalkMinutes, formatDistance } from '@/lib/geo';
+import { formatDistance } from '@/lib/geo';
 import { getInferredCategoryMeta } from '@/lib/inferredVenues';
+import { formatWalkMinutes } from '@/lib/routeService';
 import type { ToiletItem } from '@/types';
 
 interface NearestToiletCardProps {
@@ -91,8 +92,9 @@ export default function NearestToiletCard({
                   isInferred ? 'text-amber-700' : 'text-blue-600'
                 }`}
               >
-                {formatDistance(toilet.distance)} · 步行约
-                {estimateWalkMinutes(toilet.distance)}分钟
+                {toilet.isRouteDistance ? '步行路线 ' : '约 '}
+                {formatDistance(toilet.distance)} · 约
+                {formatWalkMinutes(toilet.walkDuration, toilet.distance)}分钟
               </span>
             )}
             {(toilet.availableVotes || 0) > 0 && (

@@ -265,13 +265,13 @@ async function performFullLocationFlow(force = false): Promise<UserCoords | null
     return null;
   })();
 
-  // 第 1 层：高精度硬件 GPS 定位（4.5 秒快速超时）
+  // 第 1 层：高精度硬件 GPS 定位（6.5 秒冷启动宽限，提升手机与室外街道级锁定率）
   if (navigator.geolocation) {
     try {
       const pos = await getBrowserPositionOnce({
         enableHighAccuracy: true,
-        timeout: 4500,
-        maximumAge: force ? 0 : 60000,
+        timeout: 6500,
+        maximumAge: force ? 0 : 45000,
       });
       const rawLng = pos.coords.longitude;
       const rawLat = pos.coords.latitude;
@@ -292,8 +292,8 @@ async function performFullLocationFlow(force = false): Promise<UserCoords | null
         try {
           const netPos = await getBrowserPositionOnce({
             enableHighAccuracy: false,
-            timeout: 6000,
-            maximumAge: force ? 15000 : 180000,
+            timeout: 8000,
+            maximumAge: force ? 15000 : 120000,
           });
           const rawLng = netPos.coords.longitude;
           const rawLat = netPos.coords.latitude;

@@ -41,7 +41,6 @@ import {
 } from '@/hooks/useUserLocation';
 import {
   CITY_HOTSPOTS,
-  estimateWalkMinutes,
   formatDistance,
 } from '@/lib/geo';
 import {
@@ -49,6 +48,10 @@ import {
   INFERRED_CATEGORY_LIST,
 } from '@/lib/inferredVenues';
 import { PlaceSuggestion, searchPlaceClient } from '@/lib/mapService';
+import {
+  fetchShortestWalkingRouteClient,
+  formatWalkMinutes,
+} from '@/lib/routeService';
 import type { InferredCategory, MapBounds, ToiletItem } from '@/types';
 
 const FALLBACK_CENTER: [number, number] = [116.397428, 39.90923];
@@ -113,6 +116,9 @@ function MapHomeContent() {
   const [isInteractingMap, setIsInteractingMap] = useState(false);
 
   const [selectedToilet, setSelectedToilet] = useState<ToiletItem | null>(null);
+  const [activeRoutePath, setActiveRoutePath] = useState<
+    [number, number][] | null
+  >(null);
   const [hoveredToiletId, setHoveredToiletId] = useState<string | null>(null);
   const [navTarget, setNavTarget] = useState<ToiletItem | null>(null);
 
@@ -229,9 +235,11 @@ function MapHomeContent() {
     isSyncingPois,
     isSyncingInferred,
     refreshAreaPois,
+    notifyRouteUpdated,
   } = useToilets({
     lng: queryCenter[0],
     lat: queryCenter[1],
+    userLocation: location,
     radius: dynamicRadius,
     bounds: viewportBounds,
     filters: combinedFilters,
@@ -284,6 +292,43 @@ function MapHomeContent() {
     if (!selectedToilet) return null;
     return toilets.find((t) => t.id === selectedToilet.id) || selectedToilet;
   }, [selectedToilet, toilets]);
+
+  // 选中具体目标时，自动规划「用户真实定位 -> 目标点」的最短可行步行路线并在地图绘出路径折线
+  useEffect(() => {
+    if (!expandedToilet || !location || !location.inChina) {
+      setActiveRoutePath(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetchShortestWalkingRouteClient(
+      location.lng,
+      location.lat,
+      expandedToilet.lng,
+      expandedToilet.lat,
+      expandedToilet.id
+    ).then((res) => {
+      if (cancelled) return;
+      if (res) {
+        setActiveRoutePath(res.polyline.length >= 2 ? res.polyline : null);
+        notifyRouteUpdated();
+      } else {
+        setActiveRoutePath(null);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    expandedToilet?.id,
+    expandedToilet?.lng,
+    expandedToilet?.lat,
+    location?.lng,
+    location?.lat,
+    location?.inChina,
+    notifyRouteUpdated,
+  ]);
 
   const closeAllPopovers = useCallback(() => {
     setSuggestions([]);
@@ -557,8 +602,9 @@ function MapHomeContent() {
                               isInferred ? 'text-amber-700' : 'text-blue-600'
                             }`}
                           >
+                            {t.isRouteDistance ? '步行 ' : ''}
                             {formatDistance(t.distance)} · 约
-                            {estimateWalkMinutes(t.distance)}分钟
+                            {formatWalkMinutes(t.walkDuration, t.distance)}分钟
                           </span>
                         )}
                         {(t.availableVotes || 0) > 0 && (
@@ -615,6 +661,7 @@ function MapHomeContent() {
           zoom={mapZoom}
           flyVersion={flyVersion}
           userLocation={location}
+          routePath={activeRoutePath}
           toilets={toilets}
           nearestId={nearest?.id || null}
           selectedId={expandedToilet?.id || null}
@@ -1028,7 +1075,11 @@ function MapHomeContent() {
           <button
             type="button"
             onClick={handleLocateMe}
-            title="回到我的定位"
+            title={
+              location?.accuracy === 'ip'
+                ? '当前为城市级网络定位，点击请求精准街道级定位'
+                : '回到我的定位'
+            }
             className="h-10 px-3 bg-white/95 hover:bg-white backdrop-blur-md rounded-2xl shadow-md border border-slate-200/90 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition"
           >
             <Crosshair
@@ -1036,7 +1087,7 @@ function MapHomeContent() {
                 locating && !location ? 'animate-spin' : ''
               }`}
             />
-            <span>定位</span>
+            <span>{location?.accuracy === 'ip' ? '精准定位' : '定位'}</span>
           </button>
         </div>
 
@@ -1136,6 +1187,7 @@ function MapHomeContent() {
                 </span>
                 {nearest.distance !== undefined && (
                   <span className="shrink-0 text-[11px] font-semibold text-blue-600">
+                    {nearest.isRouteDistance ? '步行' : ''}
                     {formatDistance(nearest.distance)}
                   </span>
                 )}

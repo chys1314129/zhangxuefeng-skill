@@ -14,6 +14,7 @@ interface InteractiveMapProps {
   zoom?: number;
   flyVersion?: number; // 显式控制相机跳转版本号，避免组件重渲染或状态更新时误回跳默认中心
   userLocation?: { lng: number; lat: number } | null;
+  routePath?: [number, number][] | null; // [lng, lat][] 最短可行步行路线折线
   toilets?: ToiletItem[];
   nearestId?: string | null;
   selectedId?: string | null;
@@ -89,7 +90,11 @@ function buildMarkerHtml(
   const distText =
     toilet.distance !== undefined ? formatDistance(toilet.distance) : '';
   const safeTitle = escapeHtml(
-    `${isInferred ? '[推测可能] ' : ''}${toilet.name}${distText ? ` (${distText})` : ''}`
+    `${isInferred ? '[推测可能] ' : ''}${toilet.name}${
+      distText
+        ? ` (${toilet.isRouteDistance ? '最短步行 ' : ''}${distText})`
+        : ''
+    }`
   );
 
   let bgColor = '#2563eb';
@@ -208,6 +213,7 @@ export default function InteractiveMap({
   zoom = 15,
   flyVersion,
   userLocation,
+  routePath = null,
   toilets = [],
   nearestId,
   selectedId,
@@ -266,6 +272,7 @@ export default function InteractiveMap({
   const markersLayerRef = useRef<any[]>([]);
   const pickerMarkerRef = useRef<any>(null);
   const userMarkerRef = useRef<any>(null);
+  const routeLinesRef = useRef<any[]>([]);
   const suppressMoveEndRef = useRef(false);
   const lastMarkerClickAtRef = useRef<number>(0);
 
@@ -302,6 +309,7 @@ export default function InteractiveMap({
     markersLayerRef.current = [];
     pickerMarkerRef.current = null;
     userMarkerRef.current = null;
+    routeLinesRef.current = [];
     containerEl.innerHTML = '';
 
     const emitViewport = (isInitial = false) => {
@@ -603,6 +611,69 @@ export default function InteractiveMap({
       }).addTo(map);
     }
   }, [userLocation, mapReady, resolvedEngine]);
+
+  // 渲染用户定位 -> 选中厕所的最短可行步行路线折线
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !resolvedEngine) return;
+
+    routeLinesRef.current.forEach((line) => {
+      try {
+        if (line.setMap) line.setMap(null);
+        else if (line.remove) line.remove();
+      } catch {
+        // ignore
+      }
+    });
+    routeLinesRef.current = [];
+
+    if (!routePath || routePath.length < 2) return;
+
+    if (resolvedEngine === 'amap-sdk' && (window as any).AMap) {
+      const AMap = (window as any).AMap;
+      const borderLine = new AMap.Polyline({
+        path: routePath,
+        strokeColor: '#ffffff',
+        strokeWeight: 8,
+        strokeOpacity: 0.9,
+        lineJoin: 'round',
+        lineCap: 'round',
+        zIndex: 80,
+      });
+      const mainLine = new AMap.Polyline({
+        path: routePath,
+        strokeColor: '#2563eb',
+        strokeWeight: 5,
+        strokeOpacity: 0.92,
+        strokeStyle: 'dashed',
+        strokeDasharray: [10, 6],
+        lineJoin: 'round',
+        lineCap: 'round',
+        zIndex: 85,
+      });
+      map.add([borderLine, mainLine]);
+      routeLinesRef.current = [borderLine, mainLine];
+    } else if (leafletModRef.current) {
+      const L = leafletModRef.current;
+      const latlngs = routePath.map(([lng, lat]) => [lat, lng]);
+      const borderLine = L.polyline(latlngs, {
+        color: '#ffffff',
+        weight: 8,
+        opacity: 0.92,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+      const mainLine = L.polyline(latlngs, {
+        color: '#2563eb',
+        weight: 4.5,
+        opacity: 0.95,
+        dashArray: '8, 6',
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+      routeLinesRef.current = [borderLine, mainLine];
+    }
+  }, [routePath, mapReady, resolvedEngine]);
 
   // 渲染高德与用户共建公厕标记
   useEffect(() => {

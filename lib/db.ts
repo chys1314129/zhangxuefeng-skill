@@ -794,6 +794,8 @@ export function recalculateToiletStats(db: SQLiteDB, toiletId: string) {
 export interface QueryToiletsOptions {
   lng: number;
   lat: number;
+  userLng?: number;
+  userLat?: number;
   radius: number;
   bounds?: {
     minLng: number;
@@ -863,6 +865,8 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
   const {
     lng,
     lat,
+    userLng,
+    userLat,
     radius,
     bounds,
     page = 1,
@@ -877,7 +881,16 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     inferredCategory = null,
   } = opts;
 
-  const confirmedWithin500m = countConfirmedToiletsWithin(lng, lat, 500);
+  const originLng =
+    typeof userLng === 'number' && Number.isFinite(userLng) ? userLng : lng;
+  const originLat =
+    typeof userLat === 'number' && Number.isFinite(userLat) ? userLat : lat;
+
+  const confirmedWithin500m = countConfirmedToiletsWithin(
+    originLng,
+    originLat,
+    500
+  );
 
   const radiusBox = getBoundingBox(lng, lat, radius);
   const minLat = bounds ? Math.min(radiusBox.minLat, bounds.minLat) : radiusBox.minLat;
@@ -966,7 +979,8 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
   for (const row of rawRows) {
     const rLng = Number(row.lng);
     const rLat = Number(row.lat);
-    const dist = haversineDistance(lng, lat, rLng, rLat);
+    const viewDist = haversineDistance(lng, lat, rLng, rLat);
+    const userDist = haversineDistance(originLng, originLat, rLng, rLat);
     const inViewport =
       bounds &&
       rLng >= bounds.minLng &&
@@ -974,9 +988,10 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
       rLat >= bounds.minLat &&
       rLat <= bounds.maxLat;
 
-    if (dist <= radius || inViewport) {
+    if (viewDist <= radius || inViewport) {
       const item = mapToiletRow(row, userId);
-      item.distance = dist;
+      item.straightDistance = userDist;
+      item.distance = userDist;
       if (item.source !== 'INFERRED') {
         confirmedCoords.push({ lng: rLng, lat: rLat });
       }

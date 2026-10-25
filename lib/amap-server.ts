@@ -348,3 +348,123 @@ export async function searchInferredVenuesServer(opts: {
   return Array.from(merged.values());
 }
 
+export interface WalkingDistanceEntry {
+  id: string;
+  distance: number; // 最短可行步行路线距离（米）
+  duration: number; // 预计步行耗时（秒）
+}
+
+export interface ShortestWalkingRouteResult {
+  distance: number;
+  duration: number;
+  polyline: [number, number][];
+}
+
+/**
+ * 服务端批量测算最短步行规划距离（高德 v3/distance?type=3，单次最多支持 100 个点）
+ */
+export async function batchWalkingDistanceServer(opts: {
+  userLng: number;
+  userLat: number;
+  targets: { id: string; lng: number; lat: number }[];
+}): Promise<WalkingDistanceEntry[]> {
+  const key = getServerAmapKey();
+  if (!key || !opts.targets.length) return [];
+
+  const slice = opts.targets.slice(0, 100);
+  const origins = slice
+    .map((t) => `${t.lng.toFixed(6)},${t.lat.toFixed(6)}`)
+    .join('|');
+  const dest = `${opts.userLng.toFixed(6)},${opts.userLat.toFixed(6)}`;
+
+  const url =
+    `https://restapi.amap.com/v3/distance?key=${encodeURIComponent(key)}` +
+    `&origins=${encodeURIComponent(origins)}&destination=${encodeURIComponent(dest)}&type=3`;
+
+  const data = await fetchAmapJson(url, 4000);
+  if (data?.status !== '1' || !Array.isArray(data.results)) {
+    return [];
+  }
+
+  const out: WalkingDistanceEntry[] = [];
+  for (const r of data.results) {
+    const idx = Number(r?.origin_id) - 1;
+    const dist = Number(r?.distance);
+    const dur = Number(r?.duration);
+    if (
+      idx >= 0 &&
+      idx < slice.length &&
+      Number.isFinite(dist) &&
+      dist >= 0 &&
+      !r?.info
+    ) {
+      out.push({
+        id: slice[idx].id,
+        distance: Math.round(dist),
+        duration: Number.isFinite(dur) && dur > 0 ? Math.round(dur) : Math.max(60, Math.round(dist / 1.25)),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 服务端单点最短可行步行路线规划（高德 v3/direction/walking，遍历全部候选方案取最短路径并返回折线坐标）
+ */
+export async function planShortestWalkingRouteServer(opts: {
+  fromLng: number;
+  fromLat: number;
+  toLng: number;
+  toLat: number;
+}): Promise<ShortestWalkingRouteResult | null> {
+  const key = getServerAmapKey();
+  if (!key) return null;
+
+  const origin = `${opts.fromLng.toFixed(6)},${opts.fromLat.toFixed(6)}`;
+  const destination = `${opts.toLng.toFixed(6)},${opts.toLat.toFixed(6)}`;
+  const url =
+    `https://restapi.amap.com/v3/direction/walking?key=${encodeURIComponent(key)}` +
+    `&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`;
+
+  const data = await fetchAmapJson(url, 4000);
+  const paths = data?.route?.paths;
+  if (data?.status !== '1' || !Array.isArray(paths) || paths.length === 0) {
+    return null;
+  }
+
+  // 严格选取距离最短的可行步行方案
+  let bestPath = paths[0];
+  for (const p of paths) {
+    if (Number(p?.distance) >= 0 && Number(p.distance) < Number(bestPath.distance)) {
+      bestPath = p;
+    }
+  }
+
+  const distance = Math.round(Number(bestPath?.distance || 0));
+  const rawDur = Number(bestPath?.duration || 0);
+  const duration =
+    Number.isFinite(rawDur) && rawDur > 0
+      ? Math.round(rawDur)
+      : Math.max(60, Math.round(distance / 1.25));
+
+  const polyline: [number, number][] = [];
+  if (Array.isArray(bestPath?.steps)) {
+    for (const step of bestPath.steps) {
+      const rawPoly = typeof step?.polyline === 'string' ? step.polyline : '';
+      if (!rawPoly) continue;
+      for (const pair of rawPoly.split(';')) {
+        const [lng, lat] = pair.split(',').map(Number);
+        if (Number.isFinite(lng) && Number.isFinite(lat)) {
+          const prev = polyline[polyline.length - 1];
+          if (!prev || prev[0] !== lng || prev[1] !== lat) {
+            polyline.push([lng, lat]);
+          }
+        }
+      }
+    }
+  }
+
+  return { distance, duration, polyline };
+}
+
+

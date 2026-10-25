@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Copy,
@@ -9,9 +9,14 @@ import {
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { estimateWalkMinutes, formatDistance } from '@/lib/geo';
+import { formatDistance } from '@/lib/geo';
 import { getInferredCategoryMeta } from '@/lib/inferredVenues';
 import { buildAMapWalkUrl } from '@/lib/mapService';
+import {
+  fetchShortestWalkingRouteClient,
+  formatWalkMinutes,
+  type WalkingRouteDetail,
+} from '@/lib/routeService';
 import type { ToiletItem } from '@/types';
 
 interface NavigationModalProps {
@@ -25,8 +30,13 @@ export default function NavigationModal({
   userLocation,
   onClose,
 }: NavigationModalProps) {
+  const [liveRoute, setLiveRoute] = useState<WalkingRouteDetail | null>(null);
+
   useEffect(() => {
-    if (!toilet) return;
+    if (!toilet) {
+      setLiveRoute(null);
+      return;
+    }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -34,12 +44,38 @@ export default function NavigationModal({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [toilet, onClose]);
 
+  useEffect(() => {
+    setLiveRoute(null);
+    if (!toilet || !userLocation) return;
+
+    let cancelled = false;
+    fetchShortestWalkingRouteClient(
+      userLocation.lng,
+      userLocation.lat,
+      toilet.lng,
+      toilet.lat,
+      toilet.id
+    ).then((res) => {
+      if (!cancelled && res) {
+        setLiveRoute(res);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [toilet?.id, toilet?.lng, toilet?.lat, userLocation?.lng, userLocation?.lat]);
+
   if (!toilet) return null;
 
   const isInferred = toilet.source === 'INFERRED';
   const inferredMeta = isInferred
     ? getInferredCategoryMeta(toilet.inferredCategory)
     : null;
+
+  const effectiveDist = liveRoute?.distance ?? toilet.distance;
+  const effectiveDur = liveRoute?.duration ?? toilet.walkDuration;
+  const isRouteConfirmed = Boolean(liveRoute || toilet.isRouteDistance);
 
   const amapUrl = buildAMapWalkUrl({
     toLng: toilet.lng,
@@ -110,12 +146,15 @@ export default function NavigationModal({
         )}
 
         <div className="bg-slate-50 rounded-xl p-3.5 mb-4 space-y-1.5 text-sm">
-          {toilet.distance !== undefined && (
+          {effectiveDist !== undefined && (
             <div className="flex items-center gap-2 text-slate-700 font-medium flex-wrap">
-              <span>🚶 直线距离 {formatDistance(toilet.distance)}</span>
+              <span>
+                🚶 {isRouteConfirmed ? '最短步行路线' : '参考距离'}{' '}
+                {formatDistance(effectiveDist)}
+              </span>
               <span className="text-slate-300">·</span>
               <span className="text-blue-600">
-                预计步行约 {estimateWalkMinutes(toilet.distance)} 分钟
+                预计步行约 {formatWalkMinutes(effectiveDur, effectiveDist)} 分钟
               </span>
             </div>
           )}

@@ -3,12 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { useAuth } from '@/hooks/useAuth';
+import { haversineDistance } from '@/lib/geo';
 import type { DiscoveredInferredVenue } from '@/lib/inferredVenues';
 import {
   DiscoveredPOI,
   searchInferredVenuePOIsClient,
   searchNearbyToiletPOIsClient,
 } from '@/lib/mapService';
+import {
+  batchMeasureWalkingRoutesClient,
+  fetchShortestWalkingRouteClient,
+  getCachedRouteMetrics,
+} from '@/lib/routeService';
 import type { InferredCategory, MapBounds, ToiletItem } from '@/types';
 
 export interface ToiletFilters {
@@ -24,6 +30,7 @@ export interface ToiletFilters {
 interface UseToiletsParams {
   lng?: number;
   lat?: number;
+  userLocation?: { lng: number; lat: number; inChina?: boolean } | null;
   radius?: number;
   bounds?: MapBounds | null;
   filters?: ToiletFilters;
@@ -45,6 +52,7 @@ function makeGridKey(
 export function useToilets({
   lng,
   lat,
+  userLocation = null,
   radius = 3500,
   bounds = null,
   filters = {},
@@ -55,11 +63,32 @@ export function useToilets({
   const [isSyncingPois, setIsSyncingPois] = useState(false);
   const [isSyncingInferred, setIsSyncingInferred] = useState(false);
   const [hasCompletedInitialScan, setHasCompletedInitialScan] = useState(false);
+  const [routeTick, setRouteTick] = useState(0);
+
+  // 测距基准原点：始终优先以「用户真实定位」为准；仅在无定位时回退至地图中心
+  const distOrigin = useMemo(() => {
+    if (
+      userLocation &&
+      userLocation.inChina !== false &&
+      Number.isFinite(userLocation.lng) &&
+      Number.isFinite(userLocation.lat)
+    ) {
+      return { lng: userLocation.lng, lat: userLocation.lat };
+    }
+    if (lng !== undefined && lat !== undefined) {
+      return { lng, lat };
+    }
+    return null;
+  }, [userLocation, lng, lat]);
 
   const queryParams = new URLSearchParams();
   if (lng !== undefined && lat !== undefined) {
     queryParams.set('lng', lng.toFixed(6));
     queryParams.set('lat', lat.toFixed(6));
+    if (distOrigin) {
+      queryParams.set('userLng', distOrigin.lng.toFixed(6));
+      queryParams.set('userLat', distOrigin.lat.toFixed(6));
+    }
     queryParams.set('radius', String(radius));
     queryParams.set('limit', '350');
     if (bounds) {
@@ -216,7 +245,6 @@ export function useToilets({
     [mutate, syncInferredToServer]
   );
 
-  // 自动检索当前视野内的高德确认公厕 POI
   useEffect(() => {
     if (lng === undefined || lat === undefined) return;
     if (filters.onlyMine) return;
@@ -244,7 +272,6 @@ export function useToilets({
     runPoiDiscovery,
   ]);
 
-  // 当「🧭 推测可借用」胶囊处于开启状态时，自动拉取周边 8 类潜在可借用场所（错峰 480ms 遵守高德 3 QPS）
   useEffect(() => {
     if (lng === undefined || lat === undefined) return;
     if (!filters.includeInferred || filters.onlyMine) return;
@@ -269,6 +296,107 @@ export function useToilets({
     runInferredDiscovery,
   ]);
 
+  const rawToilets: ToiletItem[] = data?.data?.toilets || [];
+
+  // 异步调用高德步行路网 API 批量计算「用户定位 -> 各目标厕所」的最短可行路线距离（绕开江河湖泊、围墙与护栏）
+  useEffect(() => {
+    if (!distOrigin || rawToilets.length === 0) return;
+
+    const uLng = distOrigin.lng;
+    const uLat = distOrigin.lat;
+
+    // 筛选直线距离 9.5km 内的可步行候选点（按直线距离由近到远优先测算）
+    const walkable = rawToilets
+      .map((t) => ({
+        id: t.id,
+        lng: t.lng,
+        lat: t.lat,
+        source: t.source,
+        sDist: haversineDistance(uLng, uLat, t.lng, t.lat),
+      }))
+      .filter((t) => t.sDist <= 9500)
+      .sort((a, b) => a.sDist - b.sDist);
+
+    if (walkable.length === 0) return;
+
+    const hasUncached = walkable
+      .slice(0, 80)
+      .some((t) => !getCachedRouteMetrics(uLng, uLat, t.id));
+    if (!hasUncached) return;
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const measured = await batchMeasureWalkingRoutesClient(
+        uLng,
+        uLat,
+        walkable.slice(0, 80)
+      );
+      if (cancelled) return;
+      if (measured.size > 0) {
+        setRouteTick((v) => v + 1);
+      }
+
+      // 对当前路网距离排第一的最近点位再执行一次正向 v3/direction/walking 最短方案核验
+      const topConfirmed = walkable
+        .filter((w) => w.source !== 'INFERRED')
+        .sort((a, b) => {
+          const da = getCachedRouteMetrics(uLng, uLat, a.id)?.distance ?? a.sDist;
+          const db = getCachedRouteMetrics(uLng, uLat, b.id)?.distance ?? b.sDist;
+          return da - db;
+        })[0];
+
+      if (topConfirmed && !cancelled) {
+        const exact = await fetchShortestWalkingRouteClient(
+          uLng,
+          uLat,
+          topConfirmed.lng,
+          topConfirmed.lat,
+          topConfirmed.id
+        );
+        if (exact && !cancelled) {
+          setRouteTick((v) => v + 1);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [distOrigin?.lng, distOrigin?.lat, rawToilets]);
+
+  // 融合高德最短可行路线距离并重新按真实路线距离由近到远排序
+  const toilets: ToiletItem[] = useMemo(() => {
+    void routeTick;
+    if (!distOrigin) return rawToilets;
+
+    const uLng = distOrigin.lng;
+    const uLat = distOrigin.lat;
+
+    const enriched = rawToilets.map((t) => {
+      const straight = haversineDistance(uLng, uLat, t.lng, t.lat);
+      const route = getCachedRouteMetrics(uLng, uLat, t.id);
+      if (route) {
+        return {
+          ...t,
+          straightDistance: straight,
+          distance: route.distance,
+          walkDuration: route.duration,
+          isRouteDistance: true,
+        };
+      }
+      return {
+        ...t,
+        straightDistance: straight,
+        distance: straight,
+        isRouteDistance: false,
+      };
+    });
+
+    enriched.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+    return enriched;
+  }, [rawToilets, distOrigin, routeTick]);
+
   const refreshAreaPois = useCallback(async () => {
     if (lng === undefined || lat === undefined) return 0;
     const count = await runPoiDiscovery(lng, lat, radius, bounds, true);
@@ -289,13 +417,11 @@ export function useToilets({
     mutate,
   ]);
 
-  const toilets: ToiletItem[] = data?.data?.toilets || [];
   const confirmedWithin500m: number | undefined =
     typeof data?.data?.confirmedWithin500m === 'number'
       ? data.data.confirmedWithin500m
       : undefined;
 
-  // 优先推荐最近的确切公厕；若附近完全没有确切公厕，才兜底返回最近的推测可借用场所
   const nearestConfirmed: ToiletItem | null = useMemo(
     () => toilets.find((t) => t.source !== 'INFERRED') || null,
     [toilets]
@@ -305,7 +431,7 @@ export function useToilets({
     if (
       nearestConfirmed &&
       (nearestConfirmed.distance === undefined ||
-        nearestConfirmed.distance <= 800 ||
+        nearestConfirmed.distance <= 900 ||
         !toilets[0] ||
         toilets[0].source !== 'INFERRED')
     ) {
@@ -313,6 +439,10 @@ export function useToilets({
     }
     return toilets[0] || nearestConfirmed || null;
   }, [nearestConfirmed, toilets]);
+
+  const notifyRouteUpdated = useCallback(() => {
+    setRouteTick((v) => v + 1);
+  }, []);
 
   return {
     toilets,
@@ -327,5 +457,6 @@ export function useToilets({
     error,
     mutate,
     refreshAreaPois,
+    notifyRouteUpdated,
   };
 }

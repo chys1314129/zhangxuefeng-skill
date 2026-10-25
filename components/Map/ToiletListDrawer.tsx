@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { MessageSquare, Navigation, Star, X } from 'lucide-react';
-import { estimateWalkMinutes, formatDistance } from '@/lib/geo';
+import { formatDistance } from '@/lib/geo';
 import { getInferredCategoryMeta } from '@/lib/inferredVenues';
+import { formatWalkMinutes } from '@/lib/routeService';
 import type { ToiletItem } from '@/types';
 
 interface ToiletListDrawerProps {
@@ -109,8 +110,9 @@ export default function ToiletListDrawer({
                             isInferred ? 'text-amber-700' : 'text-blue-600'
                           }`}
                         >
+                          {t.isRouteDistance ? '步行 ' : ''}
                           {formatDistance(t.distance)} (约
-                          {estimateWalkMinutes(t.distance)}分钟)
+                          {formatWalkMinutes(t.walkDuration, t.distance)}分钟)
                         </span>
                       )}
                       {t.floor && <span>· {t.floor}</span>}

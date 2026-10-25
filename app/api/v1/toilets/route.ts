@@ -19,6 +19,10 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const lng = parseFloat(searchParams.get('lng') || '116.397428');
     const lat = parseFloat(searchParams.get('lat') || '39.90923');
+    const rawUserLng = parseFloat(searchParams.get('userLng') || '');
+    const rawUserLat = parseFloat(searchParams.get('userLat') || '');
+    const userLng = Number.isFinite(rawUserLng) ? rawUserLng : undefined;
+    const userLat = Number.isFinite(rawUserLat) ? rawUserLat : undefined;
     const radius = Math.min(
       Math.max(parseInt(searchParams.get('radius') || '3000', 10), 100),
       20000
@@ -55,6 +59,8 @@ export async function GET(request: NextRequest) {
     const result = queryNearbyToilets({
       lng: Number.isFinite(lng) ? lng : 116.397428,
       lat: Number.isFinite(lat) ? lat : 39.90923,
+      userLng,
+      userLat,
       radius,
       bounds,
       page,
