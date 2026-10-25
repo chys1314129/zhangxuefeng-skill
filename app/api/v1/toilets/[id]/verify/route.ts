@@ -27,9 +27,11 @@ export async function POST(
 
     const db = getDb();
     const toilet = db
-      .prepare('SELECT id, source, status FROM toilets WHERE id = ?')
+      .prepare(
+        'SELECT id, source, status, COALESCE(admin_verified, 0) as admin_verified FROM toilets WHERE id = ?'
+      )
       .get(params.id) as
-      | { id: string; source: string; status: string }
+      | { id: string; source: string; status: string; admin_verified: number }
       | undefined;
 
     if (!toilet) {
@@ -80,11 +82,20 @@ export async function POST(
     const availableVotes = Number(counts?.avail || 0);
     const unavailableVotes = Number(counts?.unavail || 0);
 
-    // 针对推测点位：累计 >= 2 票“无厕所/不对外”且多于“可用”票时，自动隐藏防误导
+    const isAdmin = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+
+    // 针对未由管理员锁定认证的推测点位或高德旧点位：累计 >= 2 票“不可用”（或管理员直接标记不可用）时自动隐藏防误导
     let inferredHidden = false;
-    if (toilet.source === 'INFERRED') {
-      inferredHidden =
-        unavailableVotes >= 2 && unavailableVotes > availableVotes;
+    if (Number(toilet.admin_verified || 0) === 0) {
+      if (isAdmin && finalMyVote === 'UNAVAILABLE') {
+        inferredHidden = true;
+      } else if (
+        (toilet.source === 'INFERRED' || toilet.source === 'AMAP') &&
+        unavailableVotes >= 2 &&
+        unavailableVotes > availableVotes
+      ) {
+        inferredHidden = true;
+      }
       db.prepare(
         `UPDATE toilets SET inferred_hidden = ?, updated_at = ? WHERE id = ?`
       ).run(inferredHidden ? 1 : 0, now, toilet.id);

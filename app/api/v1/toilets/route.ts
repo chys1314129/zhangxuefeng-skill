@@ -177,11 +177,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const isAdmin = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+    const directPublish = formData.get('directPublish') !== 'false';
     const hasPhotos = photoFiles.length > 0;
     let status: 'PUBLIC' | 'PENDING' | 'PRIVATE' = 'PRIVATE';
     let autoApproved = false;
+    let adminVerified = 0;
 
-    if (hasPhotos) {
+    if (isAdmin && directPublish) {
+      // 管理员本人已实地验证：跳过审核队列，即使无照片也直接全网公开并打上实地核验认证
+      status = 'PUBLIC';
+      autoApproved = true;
+      adminVerified = 1;
+    } else if (hasPhotos) {
       const recentCount = countRecentUserPhotos(user.id, 10);
       const mod = await moderateUploadedPhotos(photoFiles, recentCount);
       if (!mod.valid) {
@@ -202,8 +210,8 @@ export async function POST(request: NextRequest) {
       `INSERT INTO toilets (
         id, name, lng, lat, address, source, status, amap_id,
         is_free, has_paper, has_accessible, opening_hours, floor, description,
-        avg_rating, comment_count, verified_at, rejected_reason, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'USER', ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, NULL, ?, ?, ?)`
+        avg_rating, comment_count, admin_verified, verified_at, rejected_reason, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'USER', ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, NULL, ?, ?, ?)`
     ).run(
       toiletId,
       name,
@@ -217,11 +225,20 @@ export async function POST(request: NextRequest) {
       openingHours,
       floor,
       description,
+      adminVerified,
       verifiedAt,
       user.id,
       now,
       now
     );
+
+    if (adminVerified === 1) {
+      db.prepare(
+        `INSERT INTO toilet_verifications (id, toilet_id, user_id, vote, created_at, updated_at)
+         VALUES (?, ?, ?, 'AVAILABLE', ?, ?)
+         ON CONFLICT(toilet_id, user_id) DO UPDATE SET vote = 'AVAILABLE', updated_at = excluded.updated_at`
+      ).run(generateId('tv'), toiletId, user.id, now, now);
+    }
 
     if (hasPhotos) {
       const insertPhoto = db.prepare(
@@ -242,11 +259,14 @@ export async function POST(request: NextRequest) {
       data: {
         toilet: created,
         autoApproved,
-        message: !hasPhotos
-          ? '已添加到你的私人标记（仅自己可见）。补充实拍照片即可自动审核公开'
-          : autoApproved
-            ? '🎉 添加成功！实景照片已通过自动审核，现已对所有人公开显示'
-            : '添加成功！已进入人工复核队列，审核通过后将对所有人公开',
+        message:
+          adminVerified === 1
+            ? '🛡️ 管理员实地验证：已跳过审核并直接向全网公开！'
+            : !hasPhotos
+              ? '已添加到你的私人标记（仅自己可见）。补充实拍照片即可自动审核公开'
+              : autoApproved
+                ? '🎉 添加成功！实景照片已通过自动审核，现已对所有人公开显示'
+                : '添加成功！已进入人工复核队列，审核通过后将对所有人公开',
       },
     });
   } catch (error: any) {

@@ -11,6 +11,8 @@
 
 # local runtime data & uploads
 /data/
+/marketing/
+/Unselected files/
 *.zip
 
 # env files (keep .env.example in git)

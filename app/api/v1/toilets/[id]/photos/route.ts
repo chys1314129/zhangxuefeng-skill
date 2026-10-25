@@ -60,7 +60,9 @@ export async function POST(
     }
 
     const recentCount = countRecentUserPhotos(user.id, 10);
-    const mod = await moderateUploadedPhotos(photoFiles, recentCount);
+    const mod = isAdmin
+      ? { valid: true, autoApproved: true, nextStatus: 'PUBLIC' as const }
+      : await moderateUploadedPhotos(photoFiles, recentCount);
     if (!mod.valid) {
       return NextResponse.json(
         { code: 400, message: mod.reason || '照片审核未通过，请上传清晰实拍图' },

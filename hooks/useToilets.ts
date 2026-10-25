@@ -49,6 +49,8 @@ function makeGridKey(
   return `${gLng}_${gLat}_${span}`;
 }
 
+const CELL_SYNC_TTL_MS = 10 * 60 * 1000; // 10分钟网格自动复检，保持与高德最新厕所动态同步
+
 export function useToilets({
   lng,
   lat,
@@ -58,8 +60,8 @@ export function useToilets({
   filters = {},
 }: UseToiletsParams) {
   const { user, authFetch } = useAuth();
-  const syncedCellsRef = useRef<Set<string>>(new Set());
-  const syncedInferredCellsRef = useRef<Set<string>>(new Set());
+  const syncedCellsRef = useRef<Map<string, number>>(new Map());
+  const syncedInferredCellsRef = useRef<Map<string, number>>(new Map());
   const [isSyncingPois, setIsSyncingPois] = useState(false);
   const [isSyncingInferred, setIsSyncingInferred] = useState(false);
   const [hasCompletedInitialScan, setHasCompletedInitialScan] = useState(false);
@@ -131,20 +133,33 @@ export function useToilets({
   );
 
   const syncWaveToServer = useCallback(
-    async (wavePois: DiscoveredPOI[]) => {
+    async (
+      wavePois: DiscoveredPOI[],
+      extra?: {
+        fullScan?: boolean;
+        scanCenter?: { lng: number; lat: number; force?: boolean };
+      }
+    ) => {
       if (!wavePois.length) return 0;
       try {
         const res = await fetch('/api/v1/toilets/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pois: wavePois }),
+          body: JSON.stringify({
+            pois: wavePois,
+            fullScan: extra?.fullScan,
+            scanCenter: extra?.scanCenter,
+          }),
         });
         const json = await res.json();
-        const syncedCount = Number(json?.data?.synced || 0);
-        if (syncedCount > 0) {
+        const changedCount =
+          Number(json?.data?.synced || 0) +
+          Number(json?.data?.updated || 0) +
+          Number(json?.data?.retired || 0);
+        if (changedCount > 0) {
           mutate();
         }
-        return syncedCount;
+        return changedCount;
       } catch {
         return 0;
       }
@@ -162,11 +177,13 @@ export function useToilets({
           body: JSON.stringify({ inferredVenues: venues }),
         });
         const json = await res.json();
-        const syncedCount = Number(json?.data?.syncedInferred || 0);
-        if (syncedCount > 0) {
+        const changedCount =
+          Number(json?.data?.syncedInferred || 0) +
+          Number(json?.data?.updated || 0);
+        if (changedCount > 0) {
           mutate();
         }
-        return syncedCount;
+        return changedCount;
       } catch {
         return 0;
       }
@@ -183,7 +200,8 @@ export function useToilets({
       force = false
     ): Promise<number> => {
       const cellKey = makeGridKey(targetLng, targetLat, targetBounds);
-      if (!force && syncedCellsRef.current.has(cellKey)) {
+      const lastSyncTs = syncedCellsRef.current.get(cellKey) || 0;
+      if (!force && lastSyncTs > 0 && Date.now() - lastSyncTs < CELL_SYNC_TTL_MS) {
         setHasCompletedInitialScan(true);
         return 0;
       }
@@ -201,7 +219,12 @@ export function useToilets({
         );
 
         if (allPois.length > 0) {
-          syncedCellsRef.current.add(cellKey);
+          syncedCellsRef.current.set(cellKey, Date.now());
+          // 全波次拉取完成后执行一次增量变更校准与下线点位巡检
+          await syncWaveToServer(allPois, {
+            fullScan: true,
+            scanCenter: { lng: targetLng, lat: targetLat, force },
+          });
           await mutate();
         }
         return allPois.length;
@@ -221,7 +244,8 @@ export function useToilets({
       force = false
     ): Promise<number> => {
       const cellKey = `${Math.round(targetLng * 300)}_${Math.round(targetLat * 300)}`;
-      if (!force && syncedInferredCellsRef.current.has(cellKey)) {
+      const lastSyncTs = syncedInferredCellsRef.current.get(cellKey) || 0;
+      if (!force && lastSyncTs > 0 && Date.now() - lastSyncTs < CELL_SYNC_TTL_MS) {
         return 0;
       }
 
@@ -233,7 +257,7 @@ export function useToilets({
           Math.min(Math.max(targetRadius, 1800), 5000)
         );
         if (venues.length > 0) {
-          syncedInferredCellsRef.current.add(cellKey);
+          syncedInferredCellsRef.current.set(cellKey, Date.now());
           await syncInferredToServer(venues);
           await mutate();
         }

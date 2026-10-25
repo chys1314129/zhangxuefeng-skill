@@ -65,7 +65,8 @@ const ACCURACY_SCORE: Record<LocationAccuracyLevel, number> = {
 function MapHomeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user } = useAuth();
+  const { user, authFetch } = useAuth();
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   const { location, loading: locating, requestLocation } = useUserLocation();
 
   const initialLng = parseFloat(searchParams.get('lng') || '');
@@ -234,6 +235,7 @@ function MapHomeContent() {
     isLoading,
     isSyncingPois,
     isSyncingInferred,
+    mutate,
     refreshAreaPois,
     notifyRouteUpdated,
   } = useToilets({
@@ -465,6 +467,35 @@ function MapHomeContent() {
   const resetAllFilters = () => {
     setFilters({});
     setInferredCategory('ALL');
+  };
+
+  const handleAdminDirectVerify = async (target: ToiletItem) => {
+    try {
+      const res = await authFetch(
+        `/api/v1/admin/toilets/${target.id}/approve`,
+        { method: 'POST' }
+      );
+      const json = await res.json();
+      if (json.code === 200) {
+        toast.success(
+          json.message || '🛡️ 已跳过审核直接向全网公开！'
+        );
+        if (json.data?.toilet) {
+          setSelectedToilet({
+            ...target,
+            ...json.data.toilet,
+            distance: target.distance,
+            walkDuration: target.walkDuration,
+            isRouteDistance: target.isRouteDistance,
+          });
+        }
+        await mutate();
+      } else {
+        toast.error(json.message || '操作失败');
+      }
+    } catch {
+      toast.error('网络异常，请重试');
+    }
   };
 
   const handleOpenList = () => {
@@ -1106,6 +1137,8 @@ function MapHomeContent() {
                 nearest?.id === expandedToilet.id &&
                 expandedToilet.source !== 'INFERRED'
               }
+              isAdmin={isAdmin}
+              onAdminDirectVerify={handleAdminDirectVerify}
               onNavigate={(t) => setNavTarget(t)}
               onClose={() => setSelectedToilet(null)}
             />
@@ -1160,6 +1193,8 @@ function MapHomeContent() {
                 nearest?.id === expandedToilet.id &&
                 expandedToilet.source !== 'INFERRED'
               }
+              isAdmin={isAdmin}
+              onAdminDirectVerify={handleAdminDirectVerify}
               onNavigate={(t) => setNavTarget(t)}
               onClose={() => setSelectedToilet(null)}
             />

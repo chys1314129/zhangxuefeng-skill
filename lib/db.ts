@@ -94,7 +94,9 @@ function initSchema(db: SQLiteDB) {
       description TEXT,
       avg_rating REAL NOT NULL DEFAULT 0,
       comment_count INTEGER NOT NULL DEFAULT 0,
+      admin_verified INTEGER DEFAULT 0,
       verified_at TEXT,
+      last_synced_at TEXT,
       rejected_reason TEXT,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -159,6 +161,12 @@ function initSchema(db: SQLiteDB) {
   if (!colNames.has('inferred_hidden')) {
     db.exec(`ALTER TABLE toilets ADD COLUMN inferred_hidden INTEGER DEFAULT 0;`);
   }
+  if (!colNames.has('admin_verified')) {
+    db.exec(`ALTER TABLE toilets ADD COLUMN admin_verified INTEGER DEFAULT 0;`);
+  }
+  if (!colNames.has('last_synced_at')) {
+    db.exec(`ALTER TABLE toilets ADD COLUMN last_synced_at TEXT;`);
+  }
 }
 
 function toNullableBool(val: unknown): boolean | null {
@@ -195,7 +203,9 @@ function mapToiletRow(row: Record<string, any>, currentUserId?: string): ToiletI
     description: row.description ?? null,
     avgRating: Number(row.avg_rating || 0),
     commentCount: Number(row.comment_count || 0),
+    adminVerified: Number(row.admin_verified || 0) === 1,
     verifiedAt: row.verified_at ?? null,
+    lastSyncedAt: row.last_synced_at ?? null,
     rejectedReason: row.rejected_reason ?? null,
     createdBy: String(row.created_by),
     createdAt: String(row.created_at),
@@ -827,6 +837,7 @@ export function countConfirmedToiletsWithin(
       `SELECT lng, lat FROM toilets
        WHERE status = 'PUBLIC'
          AND source != 'INFERRED'
+         AND (COALESCE(inferred_hidden, 0) = 0 OR COALESCE(admin_verified, 0) = 1)
          AND lat >= ? AND lat <= ?
          AND lng >= ? AND lng <= ?`
     )
@@ -925,12 +936,14 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
       conditions.push(`t.status = 'PUBLIC'`);
     }
 
+    // 排除已下线/被多人反馈无效的点位（管理员亲自实地认证的点位永久受保护不隐藏）
+    conditions.push(
+      `(COALESCE(t.inferred_hidden, 0) = 0 OR COALESCE(t.admin_verified, 0) = 1)`
+    );
+
     if (!includeInferred) {
       conditions.push(`t.source != 'INFERRED'`);
     } else {
-      conditions.push(
-        `(t.source != 'INFERRED' OR COALESCE(t.inferred_hidden, 0) = 0)`
-      );
       if (inferredCategory && inferredCategory !== 'ALL') {
         conditions.push(
           `(t.source != 'INFERRED' OR t.inferred_category = ?)`

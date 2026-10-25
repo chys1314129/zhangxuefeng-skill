@@ -64,7 +64,9 @@ export interface ToiletItem {
   description: string | null;
   avgRating: number;
   commentCount: number;
+  adminVerified?: boolean;
   verifiedAt: string | null;
+  lastSyncedAt?: string | null;
   rejectedReason: string | null;
   createdBy: string;
   createdAt: string;

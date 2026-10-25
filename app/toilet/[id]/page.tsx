@@ -247,7 +247,9 @@ export default function ToiletDetailPage() {
     });
     const json = await res.json();
     if (json.code === 200) {
-      toast.success('审核已通过，该点位现已对所有人公开！');
+      toast.success(
+        json.message || '🛡️ 管理员实地验证通过，该点位现已对所有人公开！'
+      );
       mutate();
     } else {
       toast.error(json.message || '操作失败');
@@ -276,6 +278,20 @@ export default function ToiletDetailPage() {
             在地图定位
           </Link>
 
+          {isAdmin &&
+            !isInferred &&
+            toilet.status === 'PUBLIC' &&
+            !toilet.adminVerified && (
+              <button
+                type="button"
+                onClick={handleAdminQuickApprove}
+                className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs sm:text-sm font-semibold hover:bg-emerald-100 transition"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                标记本人已核验
+              </button>
+            )}
+
           {canManage && (
             <>
               <button
@@ -301,37 +317,61 @@ export default function ToiletDetailPage() {
 
       {/* 推测可借用场所醒目免责声明与核实指引横幅 */}
       {isInferred && inferredMeta && (
-        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start gap-3 text-xs sm:text-sm text-amber-900 shadow-sm">
-          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <div className="font-extrabold text-amber-950 flex items-center gap-1.5 flex-wrap">
-              <span>⚠️ 推测可能可借用场所（尚未实拍确认）</span>
-              <span className="text-[11px] font-bold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full">
-                {inferredMeta.emoji} {inferredMeta.label}
-              </span>
-            </div>
-            <p className="text-amber-800 text-xs leading-relaxed">
-              此点位由系统根据场所类型智能标出，<strong>仅代表可能存在对外开放的免费卫生间</strong>，受营业时间与现场管理规定影响。最终确认请参考下方网友现场反馈与留言；如您亲临现场发现可用，<strong>上传一张实拍照片即可通过自动审核秒变「正式公开公厕」</strong>！
-            </p>
-            {toilet.inferredHidden && (
-              <p className="text-red-700 font-semibold text-xs pt-0.5">
-                🚫 当前已有多位用户反馈“无厕所或不对外”，系统已自动从地图隐藏该点位。
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-start justify-between gap-3 text-xs sm:text-sm text-amber-900 shadow-sm flex-wrap">
+          <div className="flex items-start gap-3 flex-1 min-w-[240px]">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <div className="font-extrabold text-amber-950 flex items-center gap-1.5 flex-wrap">
+                <span>⚠️ 推测可能可借用场所（尚未实拍确认）</span>
+                <span className="text-[11px] font-bold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full">
+                  {inferredMeta.emoji} {inferredMeta.label}
+                </span>
+              </div>
+              <p className="text-amber-800 text-xs leading-relaxed">
+                此点位由系统根据场所类型智能标出，<strong>仅代表可能存在对外开放的免费卫生间</strong>，受营业时间与现场管理规定影响。最终确认请参考下方网友现场反馈与留言；如您亲临现场发现可用，<strong>上传一张实拍照片即可通过自动审核秒变「正式公开公厕」</strong>！
               </p>
-            )}
+              {toilet.inferredHidden && (
+                <p className="text-red-700 font-semibold text-xs pt-0.5">
+                  🚫 当前已有多位用户反馈“无厕所或不对外”，系统已自动从地图隐藏该点位。
+                </p>
+              )}
+            </div>
           </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleAdminQuickApprove}
+              className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm inline-flex items-center gap-1.5 transition"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              本人已验证 · 免审直接转正公开
+            </button>
+          )}
         </div>
       )}
 
       {/* 可见性状态横幅 */}
       {toilet.status === 'PRIVATE' && (
-        <div className="bg-purple-50 border border-purple-200 rounded-2xl p-3.5 flex items-start gap-2.5 text-xs sm:text-sm text-purple-800">
-          <Lock className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
-          <div>
-            <strong>私人标记 · 仅你自己可见</strong>
-            <p className="mt-0.5 text-purple-600 text-xs">
-              由于添加时未上传照片，此厕所仅显示在你的地图上。在下方补拍照片后即可提交公开审核！
-            </p>
+        <div className="bg-purple-50 border border-purple-200 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-xs sm:text-sm text-purple-800 flex-wrap">
+          <div className="flex items-start gap-2.5">
+            <Lock className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
+            <div>
+              <strong>私人标记 · 仅你自己可见</strong>
+              <p className="mt-0.5 text-purple-600 text-xs">
+                由于添加时未上传照片，此厕所仅显示在你的地图上。在下方补拍照片后即可提交公开审核！
+              </p>
+            </div>
           </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleAdminQuickApprove}
+              className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5 transition"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              本人已验证 · 免审直接公开
+            </button>
+          )}
         </div>
       )}
 
@@ -340,32 +380,45 @@ export default function ToiletDetailPage() {
           <div>
             <strong>⏳ 待审核状态 · 审核通过后全网公开</strong>
             <p className="mt-0.5 text-amber-700 text-xs">
-              管理员核实照片真实性后将面向所有用户展示。
+              管理员核实位置或照片真实性后将面向所有用户展示。
             </p>
           </div>
           {isAdmin && (
             <button
               type="button"
               onClick={handleAdminQuickApprove}
-              className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition"
+              className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5 transition"
             >
-              一键通过审核
+              <ShieldCheck className="w-4 h-4" />
+              跳过审核 · 直接公开
             </button>
           )}
         </div>
       )}
 
       {toilet.status === 'REJECTED' && (
-        <div className="bg-red-50 border border-red-200 rounded-2xl p-3.5 flex items-start gap-2.5 text-xs sm:text-sm text-red-800">
-          <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-          <div>
-            <strong>
-              审核未通过：{toilet.rejectedReason || '请补充清晰实景图'}
-            </strong>
-            <p className="mt-0.5 text-red-600 text-xs">
-              您可以点击「编辑」修改信息或在下方重新上传清晰照片，系统将自动重新提交审核。
-            </p>
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-xs sm:text-sm text-red-800 flex-wrap">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <div>
+              <strong>
+                审核未通过：{toilet.rejectedReason || '请补充清晰实景图'}
+              </strong>
+              <p className="mt-0.5 text-red-600 text-xs">
+                您可以点击「编辑」修改信息或在下方重新上传清晰照片，系统将自动重新提交审核。
+              </p>
+            </div>
           </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleAdminQuickApprove}
+              className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5 transition"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              本人已验证 · 直接公开
+            </button>
+          )}
         </div>
       )}
 
@@ -385,9 +438,11 @@ export default function ToiletDetailPage() {
                   toilet.status === 'PUBLIC' && (
                     <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
                       <ShieldCheck className="w-3.5 h-3.5" />
-                      {toilet.source === 'AMAP'
-                        ? '地图官方POI'
-                        : '已通过实景审核公开'}
+                      {toilet.adminVerified
+                        ? '🛡️ 管理员实地核验公开'
+                        : toilet.source === 'AMAP'
+                          ? '高德官方实时POI'
+                          : '已通过实景审核公开'}
                     </span>
                   )
                 )}

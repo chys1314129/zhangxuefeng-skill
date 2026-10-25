@@ -7,6 +7,7 @@ import {
   ChevronRight,
   MessageSquare,
   Navigation,
+  ShieldCheck,
   Star,
   X,
 } from 'lucide-react';
@@ -18,20 +19,29 @@ import type { ToiletItem } from '@/types';
 interface NearestToiletCardProps {
   toilet: ToiletItem;
   isNearest?: boolean;
+  isAdmin?: boolean;
   onNavigate: (toilet: ToiletItem) => void;
+  onAdminDirectVerify?: (toilet: ToiletItem) => void;
   onClose?: () => void;
 }
 
 export default function NearestToiletCard({
   toilet,
   isNearest = false,
+  isAdmin = false,
   onNavigate,
+  onAdminDirectVerify,
   onClose,
 }: NearestToiletCardProps) {
   const isInferred = toilet.source === 'INFERRED';
   const inferredMeta = isInferred
     ? getInferredCategoryMeta(toilet.inferredCategory)
     : null;
+  const canQuickDirectVerify = Boolean(
+    isAdmin &&
+      onAdminDirectVerify &&
+      (isInferred || toilet.status !== 'PUBLIC')
+  );
 
   return (
     <div
@@ -57,6 +67,12 @@ export default function NearestToiletCard({
                   🔥 距你最近
                 </span>
               )
+            )}
+            {toilet.adminVerified && (
+              <span className="text-[11px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full inline-flex items-center gap-0.5">
+                <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                管理员核验
+              </span>
             )}
             {toilet.status === 'PRIVATE' && (
               <span className="text-[11px] font-semibold bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
@@ -164,6 +180,20 @@ export default function NearestToiletCard({
             </span>
           )}
         </div>
+      )}
+
+      {/* 管理员一键免审转正/直接公开快捷栏 */}
+      {canQuickDirectVerify && (
+        <button
+          type="button"
+          onClick={() => onAdminDirectVerify?.(toilet)}
+          className="mt-2 w-full py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-sm transition"
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          {isInferred
+            ? '本人已验证 · 免审直接转正公开'
+            : '本人已验证 · 跳过审核直接公开'}
+        </button>
       )}
 
       {/* 操作按钮行 */}

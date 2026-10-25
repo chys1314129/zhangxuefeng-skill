@@ -4,7 +4,7 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ArrowLeft, CheckCircle2, Lock } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Lock, ShieldCheck } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -35,6 +35,7 @@ function AddToiletContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, loading: authLoading, authFetch } = useAuth();
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
   const initLng = parseFloat(searchParams.get('lng') || '');
   const initLat = parseFloat(searchParams.get('lat') || '');
@@ -45,6 +46,7 @@ function AddToiletContent() {
     : [116.397428, 39.90923];
 
   const [photos, setPhotos] = useState<File[]>([]);
+  const [directPublish, setDirectPublish] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   const {
@@ -114,6 +116,9 @@ function AddToiletContent() {
       if (data.floor) formData.append('floor', data.floor);
       if (data.openingHours) formData.append('openingHours', data.openingHours);
       if (data.description) formData.append('description', data.description);
+      if (isAdmin) {
+        formData.append('directPublish', String(directPublish));
+      }
 
       photos.forEach((photo) => formData.append('photos', photo));
 
@@ -343,46 +348,70 @@ function AddToiletContent() {
           </div>
 
           {/* 3. 拍照上传与可见性规则 */}
-          <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-3">
+          <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200/80 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-bold text-slate-800">
-                3. 实景照片（决定公开或私有）
+                3. {isAdmin ? '实景照片（可选）与管理员免审公开' : '实景照片（决定公开或私有）'}
               </label>
               <span className="text-xs text-slate-400">最多 3 张</span>
             </div>
 
+            {isAdmin && (
+              <label className="flex items-start justify-between gap-3 rounded-xl p-3.5 bg-emerald-50 border border-emerald-300 cursor-pointer transition hover:bg-emerald-100/70">
+                <div className="flex items-start gap-2.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="text-xs leading-relaxed">
+                    <div className="font-extrabold text-emerald-900">
+                      🛡️ 管理员特权：本人已亲自核验，跳过审核直接全网公开
+                    </div>
+                    <p className="text-emerald-700 mt-0.5">
+                      开启后即使不拍照片也立即对所有用户公开，并打上「管理员实地核验」认证标识。
+                    </p>
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={directPublish}
+                  onChange={(e) => setDirectPublish(e.target.checked)}
+                  className="mt-1 h-4 w-4 accent-emerald-600 rounded shrink-0"
+                />
+              </label>
+            )}
+
             <PhotoUploader photos={photos} onChange={setPhotos} maxCount={3} />
 
             {/* 动态可见性规则提示卡片 */}
-            <div
-              className={`rounded-xl p-3.5 text-xs leading-relaxed flex items-start gap-2.5 ${
-                hasPhotos
-                  ? 'bg-blue-50 text-blue-800 border border-blue-200'
-                  : 'bg-purple-50 text-purple-800 border border-purple-200'
-              }`}
-            >
-              {hasPhotos ? (
-                <>
-                  <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong>已添加照片 → 自动审核通过后立即全网公开</strong>
-                    <p className="text-blue-600/90 mt-0.5">
-                      清晰合规的实景照片将由系统秒级自动审核通过并对所有人公开显示！
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <Lock className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong>未上传照片 → 仅你自己可见（私人标记）</strong>
-                    <p className="text-purple-600/90 mt-0.5">
-                      他人无法看到此点位。以后路过时随时可在详情页补拍照片通过自动审核转为公开！
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
+            {!(isAdmin && directPublish) && (
+              <div
+                className={`rounded-xl p-3.5 text-xs leading-relaxed flex items-start gap-2.5 ${
+                  hasPhotos
+                    ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                    : 'bg-purple-50 text-purple-800 border border-purple-200'
+                }`}
+              >
+                {hasPhotos ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>已添加照片 → 自动审核通过后立即全网公开</strong>
+                      <p className="text-blue-600/90 mt-0.5">
+                        清晰合规的实景照片将由系统秒级自动审核通过并对所有人公开显示！
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>未上传照片 → 仅你自己可见（私人标记）</strong>
+                      <p className="text-purple-600/90 mt-0.5">
+                        他人无法看到此点位。以后路过时随时可在详情页补拍照片通过自动审核转为公开！
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 提交按钮 */}
@@ -390,16 +419,20 @@ function AddToiletContent() {
             type="submit"
             disabled={submitting}
             className={`w-full py-3.5 rounded-xl font-bold text-sm text-white shadow-md transition disabled:opacity-50 ${
-              hasPhotos
-                ? 'bg-blue-600 hover:bg-blue-700'
-                : 'bg-purple-600 hover:bg-purple-700'
+              isAdmin && directPublish
+                ? 'bg-emerald-600 hover:bg-emerald-700'
+                : hasPhotos
+                  ? 'bg-blue-600 hover:bg-blue-700'
+                  : 'bg-purple-600 hover:bg-purple-700'
             }`}
           >
             {submitting
-              ? '正在自动审核并保存...'
-              : hasPhotos
-                ? '📸 提交并通过自动审核公开'
-                : '🔒 保存为仅自己可见的私人标记'}
+              ? '正在保存...'
+              : isAdmin && directPublish
+                ? '🛡️ 管理员免审 · 立即全网公开'
+                : hasPhotos
+                  ? '📸 提交并通过自动审核公开'
+                  : '🔒 保存为仅自己可见的私人标记'}
           </button>
         </div>
       </form>
