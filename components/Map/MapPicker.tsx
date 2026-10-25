@@ -60,7 +60,7 @@ export default function MapPicker({
   const handlePlaceSearch = async () => {
     if (!searchKw.trim()) return;
     setSearching(true);
-    const list = await searchPlaceClient(searchKw);
+    const list = await searchPlaceClient(searchKw, center[0], center[1]);
     setSearching(false);
     if (list.length > 0) {
       const first = list[0];
@@ -112,7 +112,7 @@ export default function MapPicker({
         />
 
         {/* 左上提示 */}
-        <div className="absolute top-2.5 left-2.5 z-20 bg-black/65 text-white text-[11px] px-2.5 py-1 rounded-full backdrop-blur-xs pointer-events-none">
+        <div className="absolute top-2.5 left-2.5 z-20 bg-black/65 text-white text-[11px] px-2.5 py-1 rounded-full backdrop-blur-sm pointer-events-none">
           {resolvingAddr
             ? '正在解析街道地址...'
             : '鼠标点击 / 手指轻触地图，或拖动红标微调'}

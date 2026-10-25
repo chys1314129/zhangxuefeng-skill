@@ -625,6 +625,12 @@ export interface QueryToiletsOptions {
   lng: number;
   lat: number;
   radius: number;
+  bounds?: {
+    minLng: number;
+    minLat: number;
+    maxLng: number;
+    maxLat: number;
+  } | null;
   page?: number;
   limit?: number;
   userId?: string;
@@ -645,8 +651,9 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     lng,
     lat,
     radius,
+    bounds,
     page = 1,
-    limit = 60,
+    limit = 300,
     userId,
     isFree,
     hasPaper,
@@ -655,7 +662,11 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     keyword,
   } = opts;
 
-  const bbox = getBoundingBox(lng, lat, radius);
+  const radiusBox = getBoundingBox(lng, lat, radius);
+  const minLat = bounds ? Math.min(radiusBox.minLat, bounds.minLat) : radiusBox.minLat;
+  const maxLat = bounds ? Math.max(radiusBox.maxLat, bounds.maxLat) : radiusBox.maxLat;
+  const minLng = bounds ? Math.min(radiusBox.minLng, bounds.minLng) : radiusBox.minLng;
+  const maxLng = bounds ? Math.max(radiusBox.maxLng, bounds.maxLng) : radiusBox.maxLng;
 
   const conditions: string[] = [
     't.lat >= ?',
@@ -664,10 +675,10 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
     't.lng <= ?',
   ];
   const params: (string | number)[] = [
-    bbox.minLat,
-    bbox.maxLat,
-    bbox.minLng,
-    bbox.maxLng,
+    minLat,
+    maxLat,
+    minLng,
+    maxLng,
   ];
 
   if (onlyMine && userId) {
@@ -709,8 +720,17 @@ export function queryNearbyToilets(opts: QueryToiletsOptions): {
 
   const withinRadius: ToiletItem[] = [];
   for (const row of rawRows) {
-    const dist = haversineDistance(lng, lat, Number(row.lng), Number(row.lat));
-    if (dist <= radius) {
+    const rLng = Number(row.lng);
+    const rLat = Number(row.lat);
+    const dist = haversineDistance(lng, lat, rLng, rLat);
+    const inViewport =
+      bounds &&
+      rLng >= bounds.minLng &&
+      rLng <= bounds.maxLng &&
+      rLat >= bounds.minLat &&
+      rLat <= bounds.maxLat;
+
+    if (dist <= radius || inViewport) {
       const item = mapToiletRow(row, userId);
       item.distance = dist;
       withinRadius.push(item);

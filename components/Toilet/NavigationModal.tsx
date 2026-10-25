@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { Copy, ExternalLink, Navigation, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { estimateWalkMinutes, formatDistance } from '@/lib/geo';
-import { buildAMapWalkUrl, buildTencentWalkUrl } from '@/lib/mapService';
+import { buildAMapWalkUrl } from '@/lib/mapService';
 import type { ToiletItem } from '@/types';
 
 interface NavigationModalProps {
@@ -37,14 +37,6 @@ export default function NavigationModal({
     fromLat: userLocation?.lat,
   });
 
-  const tmapUrl = buildTencentWalkUrl({
-    toLng: toilet.lng,
-    toLat: toilet.lat,
-    toName: toilet.name,
-    fromLng: userLocation?.lng,
-    fromLat: userLocation?.lat,
-  });
-
   const handleCopyAddress = async () => {
     const text = `${toilet.name}${toilet.floor ? ` (${toilet.floor})` : ''} - ${
       toilet.address || `${toilet.lng},${toilet.lat}`
@@ -59,7 +51,7 @@ export default function NavigationModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end md:items-center justify-center p-0 md:p-4"
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-4"
       onClick={onClose}
     >
       <div
@@ -70,7 +62,7 @@ export default function NavigationModal({
           <div>
             <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full mb-1.5">
               <Navigation className="w-3.5 h-3.5" />
-              步行导航前往
+              高德步行导航前往
             </div>
             <h3 className="text-lg font-bold text-slate-900 leading-snug">
               {toilet.name}
@@ -120,25 +112,11 @@ export default function NavigationModal({
             target="_blank"
             rel="noopener noreferrer"
             onClick={onClose}
-            className="w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition shadow-xs"
+            className="w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition shadow-sm"
           >
             <span className="flex items-center gap-2">
               <span className="text-base">🗺️</span>
               打开高德地图 · 步行路线规划
-            </span>
-            <ExternalLink className="w-4 h-4 opacity-80" />
-          </a>
-
-          <a
-            href={tmapUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={onClose}
-            className="w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm transition shadow-xs"
-          >
-            <span className="flex items-center gap-2">
-              <span className="text-base">🧭</span>
-              打开腾讯地图 · 步行路线规划
             </span>
             <ExternalLink className="w-4 h-4 opacity-80" />
           </a>

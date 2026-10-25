@@ -4,7 +4,14 @@ export type ToiletSource = 'AMAP' | 'USER';
 
 export type ToiletStatus = 'PUBLIC' | 'PRIVATE' | 'PENDING' | 'REJECTED';
 
-export type MapEngineType = 'amap' | 'tmap' | 'leaflet';
+export type MapEngineType = 'amap' | 'leaflet';
+
+export interface MapBounds {
+  minLng: number;
+  minLat: number;
+  maxLng: number;
+  maxLat: number;
+}
 
 export interface AuthUser {
   id: string;

@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { formatDistance } from '@/lib/geo';
-import type { MapEngineType, ToiletItem } from '@/types';
+import type { MapBounds, ToiletItem } from '@/types';
 
 const AMAP_KEY = process.env.NEXT_PUBLIC_AMAP_KEY || '';
 const AMAP_SECURITY_CODE = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE || '';
-const TMAP_KEY = process.env.NEXT_PUBLIC_TMAP_KEY || '';
 
 interface InteractiveMapProps {
   center: [number, number]; // [lng, lat]
@@ -21,9 +20,12 @@ interface InteractiveMapProps {
   pickedPoint?: [number, number] | null;
   showZoomControls?: boolean;
   zoomControlPosition?: 'top-left' | 'bottom-left' | 'bottom-right';
-  engine?: MapEngineType;
-  onEngineFallback?: (nextEngine: MapEngineType, reason?: string) => void;
-  onMoveEnd?: (lng: number, lat: number) => void;
+  onMoveEnd?: (
+    lng: number,
+    lat: number,
+    currentZoom?: number,
+    bounds?: MapBounds | null
+  ) => void;
   onSelectToilet?: (toilet: ToiletItem) => void;
   onPickLocation?: (lng: number, lat: number) => void;
 }
@@ -38,7 +40,7 @@ async function detectAmapKeyMode(): Promise<'jsapi' | 'webservice'> {
   }
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2500);
+    const timer = setTimeout(() => controller.abort(), 2200);
     const res = await fetch(
       `https://restapi.amap.com/v3/ip?key=${encodeURIComponent(AMAP_KEY)}`,
       { signal: controller.signal }
@@ -56,44 +58,8 @@ async function detectAmapKeyMode(): Promise<'jsapi' | 'webservice'> {
   } catch {
     // ignore
   }
-  cachedAmapKeyType = 'jsapi';
-  return 'jsapi';
-}
-
-function loadTencentMapScript(): Promise<any> {
-  if (typeof window === 'undefined') return Promise.resolve(null);
-  if ((window as any).TMap) return Promise.resolve((window as any).TMap);
-
-  return new Promise((resolve, reject) => {
-    const existing = document.getElementById(
-      'tencent-gljs-sdk'
-    ) as HTMLScriptElement | null;
-    if (existing) {
-      const checkTimer = setInterval(() => {
-        if ((window as any).TMap) {
-          clearInterval(checkTimer);
-          resolve((window as any).TMap);
-        }
-      }, 100);
-      setTimeout(() => {
-        clearInterval(checkTimer);
-        if ((window as any).TMap) resolve((window as any).TMap);
-        else reject(new Error('腾讯地图 SDK 加载超时'));
-      }, 6000);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.id = 'tencent-gljs-sdk';
-    script.src = `https://map.qq.com/api/gljs?v=1.exp&key=${encodeURIComponent(TMAP_KEY)}`;
-    script.async = true;
-    script.onload = () => {
-      if ((window as any).TMap) resolve((window as any).TMap);
-      else reject(new Error('TMap 未定义'));
-    };
-    script.onerror = () => reject(new Error('腾讯地图脚本加载失败'));
-    document.head.appendChild(script);
-  });
+  cachedAmapKeyType = 'webservice';
+  return 'webservice';
 }
 
 function escapeHtml(text: string): string {
@@ -108,7 +74,8 @@ function buildMarkerHtml(
   toilet: ToiletItem,
   isNearest: boolean,
   isSelected: boolean,
-  isHovered: boolean
+  isHovered: boolean,
+  currentZoom: number
 ): string {
   const distText =
     toilet.distance !== undefined ? formatDistance(toilet.distance) : '';
@@ -140,6 +107,16 @@ function buildMarkerHtml(
   }
 
   const active = isSelected || isHovered;
+
+  // 地图缩小时（zoom <= 14）对普通点位采用紧凑圆点样式，既能清晰展示上百个公厕又不互相遮挡
+  if (currentZoom <= 14 && !isNearest && !active) {
+    return `
+      <div title="${safeTitle}" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:${bgColor};color:#fff;border:2px solid #fff;box-shadow:0 3px 10px rgba(15,23,42,0.22);font-size:13px;cursor:pointer;user-select:none;">
+        <span>${emoji}</span>
+      </div>
+    `;
+  }
+
   const scaleStyle = active
     ? 'transform: scale(1.16); z-index: 999;'
     : 'transform: scale(1);';
@@ -163,6 +140,49 @@ function buildMarkerHtml(
   `;
 }
 
+function readMapViewport(
+  map: any,
+  engine: 'amap-sdk' | 'autonavi-tiles'
+): { lng: number; lat: number; zoom: number; bounds: MapBounds | null } | null {
+  try {
+    if (engine === 'amap-sdk') {
+      const c = map.getCenter?.();
+      if (!c) return null;
+      const z = Math.round(Number(map.getZoom?.() || 15));
+      let bounds: MapBounds | null = null;
+      const b = map.getBounds?.();
+      const sw = b?.getSouthWest?.();
+      const ne = b?.getNorthEast?.();
+      if (sw && ne) {
+        bounds = {
+          minLng: Number(sw.getLng()),
+          minLat: Number(sw.getLat()),
+          maxLng: Number(ne.getLng()),
+          maxLat: Number(ne.getLat()),
+        };
+      }
+      return { lng: Number(c.getLng()), lat: Number(c.getLat()), zoom: z, bounds };
+    }
+
+    const c = map.getCenter?.();
+    if (!c) return null;
+    const z = Math.round(Number(map.getZoom?.() || 15));
+    let bounds: MapBounds | null = null;
+    const b = map.getBounds?.();
+    if (b) {
+      bounds = {
+        minLng: Number(b.getWest()),
+        minLat: Number(b.getSouth()),
+        maxLng: Number(b.getEast()),
+        maxLat: Number(b.getNorth()),
+      };
+    }
+    return { lng: Number(c.lng), lat: Number(c.lat), zoom: z, bounds };
+  } catch {
+    return null;
+  }
+}
+
 export default function InteractiveMap({
   center,
   zoom = 15,
@@ -175,29 +195,26 @@ export default function InteractiveMap({
   pickedPoint,
   showZoomControls = true,
   zoomControlPosition = 'bottom-left',
-  engine = 'amap',
-  onEngineFallback,
   onMoveEnd,
   onSelectToilet,
   onPickLocation,
 }: InteractiveMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [resolvedEngine, setResolvedEngine] = useState<
-    'amap-sdk' | 'tmap-sdk' | 'autonavi-tiles'
-  >('autonavi-tiles');
+    'amap-sdk' | 'autonavi-tiles' | null
+  >(null);
   const [mapReady, setMapReady] = useState(false);
+  const [currentZoom, setCurrentZoom] = useState(zoom);
 
   const callbacksRef = useRef({
     onMoveEnd,
     onSelectToilet,
     onPickLocation,
-    onEngineFallback,
   });
   callbacksRef.current = {
     onMoveEnd,
     onSelectToilet,
     onPickLocation,
-    onEngineFallback,
   };
 
   const mapRef = useRef<any>(null);
@@ -207,34 +224,12 @@ export default function InteractiveMap({
   const userMarkerRef = useRef<any>(null);
   const suppressMoveEndRef = useRef(false);
 
-  // 引擎自动协商
+  // 自动识别高德 Key 类型（JS API SDK 或 高德官方矢量瓦片引擎）
   useEffect(() => {
     let active = true;
     setMapReady(false);
 
     async function decide() {
-      if (engine === 'leaflet') {
-        if (active) setResolvedEngine('autonavi-tiles');
-        return;
-      }
-      if (engine === 'tmap') {
-        if (!TMAP_KEY) {
-          if (active) setResolvedEngine('autonavi-tiles');
-          return;
-        }
-        try {
-          await loadTencentMapScript();
-          if (active) setResolvedEngine('tmap-sdk');
-        } catch {
-          callbacksRef.current.onEngineFallback?.(
-            'leaflet',
-            '腾讯地图加载受限，已自动切换极速瓦片'
-          );
-          if (active) setResolvedEngine('autonavi-tiles');
-        }
-        return;
-      }
-
       const mode = await detectAmapKeyMode();
       if (!active) return;
       if (mode === 'jsapi' && AMAP_KEY) {
@@ -248,13 +243,14 @@ export default function InteractiveMap({
     return () => {
       active = false;
     };
-  }, [engine]);
+  }, []);
 
-  // 初始化地图实例（同时开启鼠标滚轮、拖拽、触屏双指缩放）
+  // 初始化高德地图实例
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el || !resolvedEngine) return;
     const containerEl: HTMLDivElement = el;
+    const activeEngine = resolvedEngine;
 
     let destroyed = false;
     let instance: any = null;
@@ -263,8 +259,17 @@ export default function InteractiveMap({
     userMarkerRef.current = null;
     containerEl.innerHTML = '';
 
+    const emitViewport = (force = false) => {
+      if (!instance || (!force && suppressMoveEndRef.current)) return;
+      const vp = readMapViewport(instance, activeEngine);
+      if (vp) {
+        setCurrentZoom(vp.zoom);
+        callbacksRef.current.onMoveEnd?.(vp.lng, vp.lat, vp.zoom, vp.bounds);
+      }
+    };
+
     async function setup() {
-      if (resolvedEngine === 'amap-sdk') {
+      if (activeEngine === 'amap-sdk') {
         try {
           if (AMAP_SECURITY_CODE) {
             (window as any)._AMapSecurityConfig = {
@@ -291,16 +296,8 @@ export default function InteractiveMap({
             touchZoom: true,
           });
 
-          instance.on('moveend', () => {
-            if (suppressMoveEndRef.current) return;
-            const c = instance.getCenter();
-            if (c) {
-              callbacksRef.current.onMoveEnd?.(
-                Number(c.getLng()),
-                Number(c.getLat())
-              );
-            }
-          });
+          instance.on('moveend', () => emitViewport(false));
+          instance.on('zoomend', () => emitViewport(false));
 
           if (pickerMode) {
             instance.on('click', (e: any) => {
@@ -315,54 +312,7 @@ export default function InteractiveMap({
 
           mapRef.current = instance;
           setMapReady(true);
-          return;
-        } catch {
-          if (!destroyed) {
-            setResolvedEngine('autonavi-tiles');
-          }
-          return;
-        }
-      }
-
-      if (resolvedEngine === 'tmap-sdk') {
-        try {
-          const TMap = await loadTencentMapScript();
-          if (destroyed || !TMap) return;
-
-          instance = new TMap.Map(containerEl, {
-            center: new TMap.LatLng(center[1], center[0]),
-            zoom,
-            viewMode: '2D',
-            showControl: false,
-            draggable: true,
-            scrollable: true,
-            doubleClickZoom: true,
-          });
-
-          instance.on('panend', () => {
-            if (suppressMoveEndRef.current) return;
-            const c = instance.getCenter();
-            if (c) {
-              callbacksRef.current.onMoveEnd?.(
-                Number(c.getLng()),
-                Number(c.getLat())
-              );
-            }
-          });
-
-          if (pickerMode) {
-            instance.on('click', (evt: any) => {
-              if (evt?.latLng) {
-                callbacksRef.current.onPickLocation?.(
-                  Number(evt.latLng.getLng()),
-                  Number(evt.latLng.getLat())
-                );
-              }
-            });
-          }
-
-          mapRef.current = instance;
-          setMapReady(true);
+          setTimeout(() => emitViewport(true), 80);
           return;
         } catch {
           if (!destroyed) {
@@ -387,6 +337,7 @@ export default function InteractiveMap({
         dragging: true,
       });
 
+      // 高德官方标准中文矢量道路切片（含地铁口、商场、公园与街巷地标）
       L.tileLayer(
         'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
         {
@@ -396,11 +347,8 @@ export default function InteractiveMap({
         }
       ).addTo(instance);
 
-      instance.on('moveend', () => {
-        if (suppressMoveEndRef.current) return;
-        const c = instance.getCenter();
-        callbacksRef.current.onMoveEnd?.(Number(c.lng), Number(c.lat));
-      });
+      instance.on('moveend', () => emitViewport(false));
+      instance.on('zoomend', () => emitViewport(false));
 
       if (pickerMode) {
         instance.on('click', (e: any) => {
@@ -415,6 +363,7 @@ export default function InteractiveMap({
 
       mapRef.current = instance;
       setMapReady(true);
+      setTimeout(() => emitViewport(true), 80);
     }
 
     setup();
@@ -433,14 +382,14 @@ export default function InteractiveMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedEngine, pickerMode]);
 
-  // 监听容器尺寸变化（适配手机横竖屏切换、电脑端窗口缩放、桌面侧边栏收起/展开）
+  // 监听容器尺寸变化（适配手机横竖屏、电脑窗口缩放、侧边栏折叠展开）
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
 
     const observer = new ResizeObserver(() => {
       const map = mapRef.current;
-      if (!map) return;
+      if (!map || !resolvedEngine) return;
       try {
         if (resolvedEngine === 'amap-sdk' && map.resize) {
           map.resize();
@@ -456,35 +405,27 @@ export default function InteractiveMap({
     return () => observer.disconnect();
   }, [resolvedEngine, mapReady]);
 
-  // 通用缩放按钮动作（兼容电脑鼠标点击与手机单手触控）
   const handleZoomDelta = useCallback(
     (delta: number) => {
       const map = mapRef.current;
       if (!map || !mapReady) return;
       try {
-        if (resolvedEngine === 'amap-sdk') {
-          if (delta > 0) map.zoomIn();
-          else map.zoomOut();
-        } else if (resolvedEngine === 'tmap-sdk') {
-          const curZoom = map.getZoom?.() || 15;
-          map.setZoom?.(Math.min(19, Math.max(4, curZoom + delta)));
-        } else {
-          if (delta > 0) map.zoomIn();
-          else map.zoomOut();
-        }
+        if (delta > 0) map.zoomIn();
+        else map.zoomOut();
       } catch {
         // ignore
       }
     },
-    [mapReady, resolvedEngine]
+    [mapReady]
   );
 
-  // 外部中心点变更时平滑平移
+  // 外部中心点变更时平滑平移，并在平移后上报新视野范围以触发公厕补全
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady) return;
+    if (!map || !mapReady || !resolvedEngine) return;
 
     suppressMoveEndRef.current = true;
+    let moved = false;
     try {
       if (resolvedEngine === 'amap-sdk') {
         const cur = map.getCenter();
@@ -494,17 +435,7 @@ export default function InteractiveMap({
           Math.abs(cur.getLat() - center[1]) > 0.0003
         ) {
           map.setCenter([center[0], center[1]]);
-        }
-      } else if (resolvedEngine === 'tmap-sdk') {
-        const TMap = (window as any).TMap;
-        const cur = map.getCenter();
-        if (
-          TMap &&
-          (!cur ||
-            Math.abs(cur.getLng() - center[0]) > 0.0003 ||
-            Math.abs(cur.getLat() - center[1]) > 0.0003)
-        ) {
-          map.setCenter(new TMap.LatLng(center[1], center[0]));
+          moved = true;
         }
       } else {
         const cur = map.getCenter();
@@ -514,19 +445,32 @@ export default function InteractiveMap({
           Math.abs(cur.lat - center[1]) > 0.0003
         ) {
           map.setView([center[1], center[0]], map.getZoom(), { animate: true });
+          moved = true;
         }
       }
     } finally {
       setTimeout(() => {
         suppressMoveEndRef.current = false;
-      }, 250);
+        if (moved && mapRef.current && resolvedEngine) {
+          const vp = readMapViewport(mapRef.current, resolvedEngine);
+          if (vp) {
+            setCurrentZoom(vp.zoom);
+            callbacksRef.current.onMoveEnd?.(
+              vp.lng,
+              vp.lat,
+              vp.zoom,
+              vp.bounds
+            );
+          }
+        }
+      }, 300);
     }
   }, [center, mapReady, resolvedEngine]);
 
   // 渲染当前用户定位蓝点
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady) return;
+    if (!map || !mapReady || !resolvedEngine) return;
 
     if (userMarkerRef.current) {
       try {
@@ -557,36 +501,6 @@ export default function InteractiveMap({
       });
       map.add(m);
       userMarkerRef.current = m;
-    } else if (resolvedEngine === 'tmap-sdk' && (window as any).TMap) {
-      const TMap = (window as any).TMap;
-      const BaseOverlay: any = TMap.DOMOverlay;
-      class UserDotOverlay extends BaseOverlay {
-        position: any;
-        map: any;
-        dom: any;
-        constructor(opts: any) {
-          super(opts);
-        }
-        onInit(opts: any) {
-          this.position = opts.position;
-        }
-        createDOM() {
-          const div = document.createElement('div');
-          div.innerHTML = dotHtml;
-          div.style.position = 'absolute';
-          return div;
-        }
-        updateDOM() {
-          if (!this.map) return;
-          const pixel = this.map.projectToContainer(this.position);
-          this.dom.style.left = `${pixel.getX() - 10}px`;
-          this.dom.style.top = `${pixel.getY() - 10}px`;
-        }
-      }
-      userMarkerRef.current = new (UserDotOverlay as any)({
-        map,
-        position: new TMap.LatLng(userLocation.lat, userLocation.lng),
-      });
     } else if (leafletModRef.current) {
       const L = leafletModRef.current;
       const icon = L.divIcon({
@@ -602,10 +516,10 @@ export default function InteractiveMap({
     }
   }, [userLocation, mapReady, resolvedEngine]);
 
-  // 渲染厕所标记列表（同时响应选中态与电脑侧边栏鼠标悬停态）
+  // 渲染高德与用户共建公厕标记
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady || pickerMode) return;
+    if (!map || !mapReady || pickerMode || !resolvedEngine) return;
 
     markersLayerRef.current.forEach((m) => {
       try {
@@ -625,10 +539,17 @@ export default function InteractiveMap({
         const isNearest = nearestId === toilet.id;
         const isSelected = selectedId === toilet.id;
         const isHovered = hoveredId === toilet.id;
+        const compact = currentZoom <= 14 && !isNearest && !isSelected && !isHovered;
         const marker = new AMap.Marker({
           position: [toilet.lng, toilet.lat],
-          content: buildMarkerHtml(toilet, isNearest, isSelected, isHovered),
-          anchor: 'bottom-center',
+          content: buildMarkerHtml(
+            toilet,
+            isNearest,
+            isSelected,
+            isHovered,
+            currentZoom
+          ),
+          anchor: compact ? 'center' : 'bottom-center',
           zIndex: isSelected || isHovered ? 240 : isNearest ? 200 : 120,
         });
         marker.on('click', () => {
@@ -641,71 +562,24 @@ export default function InteractiveMap({
       return;
     }
 
-    if (resolvedEngine === 'tmap-sdk' && (window as any).TMap) {
-      const TMap = (window as any).TMap;
-      const BaseOverlay: any = TMap.DOMOverlay;
-      class HtmlToiletOverlay extends BaseOverlay {
-        position: any;
-        html: any;
-        onClick: any;
-        zIndex: any;
-        map: any;
-        dom: any;
-        constructor(opts: any) {
-          super(opts);
-        }
-        onInit(opts: any) {
-          this.position = opts.position;
-          this.html = opts.html;
-          this.onClick = opts.onClick;
-          this.zIndex = opts.zIndex;
-        }
-        createDOM() {
-          const div = document.createElement('div');
-          div.innerHTML = this.html;
-          div.style.position = 'absolute';
-          div.style.transform = 'translate(-50%, -100%)';
-          div.style.zIndex = String(this.zIndex || 100);
-          div.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.onClick?.();
-          });
-          return div;
-        }
-        updateDOM() {
-          if (!this.map) return;
-          const pixel = this.map.projectToContainer(this.position);
-          this.dom.style.left = `${pixel.getX()}px`;
-          this.dom.style.top = `${pixel.getY()}px`;
-        }
-      }
-
-      markersLayerRef.current = toilets.map((toilet) => {
-        const isNearest = nearestId === toilet.id;
-        const isSelected = selectedId === toilet.id;
-        const isHovered = hoveredId === toilet.id;
-        return new (HtmlToiletOverlay as any)({
-          map,
-          position: new TMap.LatLng(toilet.lat, toilet.lng),
-          html: buildMarkerHtml(toilet, isNearest, isSelected, isHovered),
-          zIndex: isSelected || isHovered ? 240 : isNearest ? 200 : 120,
-          onClick: () => callbacksRef.current.onSelectToilet?.(toilet),
-        });
-      });
-      return;
-    }
-
     if (leafletModRef.current) {
       const L = leafletModRef.current;
       markersLayerRef.current = toilets.map((toilet) => {
         const isNearest = nearestId === toilet.id;
         const isSelected = selectedId === toilet.id;
         const isHovered = hoveredId === toilet.id;
+        const compact = currentZoom <= 14 && !isNearest && !isSelected && !isHovered;
         const icon = L.divIcon({
-          html: buildMarkerHtml(toilet, isNearest, isSelected, isHovered),
+          html: buildMarkerHtml(
+            toilet,
+            isNearest,
+            isSelected,
+            isHovered,
+            currentZoom
+          ),
           className: 'zzcs-clean-marker',
-          iconSize: [96, 42],
-          iconAnchor: [48, 40],
+          iconSize: compact ? [28, 28] : [96, 42],
+          iconAnchor: compact ? [14, 14] : [48, 40],
         });
         const m = L.marker([toilet.lat, toilet.lng], {
           icon,
@@ -725,12 +599,15 @@ export default function InteractiveMap({
     pickerMode,
     mapReady,
     resolvedEngine,
+    currentZoom,
   ]);
 
   // 选点大头针
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady || !pickerMode || !pickedPoint) return;
+    if (!map || !mapReady || !pickerMode || !pickedPoint || !resolvedEngine) {
+      return;
+    }
 
     if (pickerMarkerRef.current) {
       try {
@@ -769,38 +646,6 @@ export default function InteractiveMap({
       });
       map.add(m);
       pickerMarkerRef.current = m;
-    } else if (resolvedEngine === 'tmap-sdk' && (window as any).TMap) {
-      const TMap = (window as any).TMap;
-      const BaseOverlay: any = TMap.DOMOverlay;
-      class PinOverlay extends BaseOverlay {
-        position: any;
-        map: any;
-        dom: any;
-        constructor(opts: any) {
-          super(opts);
-        }
-        onInit(opts: any) {
-          this.position = opts.position;
-        }
-        createDOM() {
-          const div = document.createElement('div');
-          div.innerHTML = pinHtml;
-          div.style.position = 'absolute';
-          div.style.transform = 'translate(-50%, -100%)';
-          div.style.pointerEvents = 'none';
-          return div;
-        }
-        updateDOM() {
-          if (!this.map) return;
-          const pixel = this.map.projectToContainer(this.position);
-          this.dom.style.left = `${pixel.getX()}px`;
-          this.dom.style.top = `${pixel.getY()}px`;
-        }
-      }
-      pickerMarkerRef.current = new (PinOverlay as any)({
-        map,
-        position: new TMap.LatLng(pickedPoint[1], pickedPoint[0]),
-      });
     } else if (leafletModRef.current) {
       const L = leafletModRef.current;
       const icon = L.divIcon({
@@ -832,7 +677,6 @@ export default function InteractiveMap({
     <div className="relative w-full h-full bg-slate-100 overflow-hidden">
       <div ref={containerRef} className="w-full h-full" />
 
-      {/* 统一地图缩放控件（适配电脑无滚轮触控板与大屏鼠标点击） */}
       {showZoomControls && mapReady && (
         <div
           className={`absolute z-20 flex flex-col bg-white/95 backdrop-blur-md rounded-xl shadow-md border border-slate-200/90 overflow-hidden ${zoomPosClass}`}
@@ -862,7 +706,7 @@ export default function InteractiveMap({
         <div className="absolute inset-0 flex items-center justify-center bg-slate-50/80 z-10">
           <div className="flex items-center gap-2 text-sm text-slate-500 bg-white px-4 py-2 rounded-full shadow-sm">
             <span className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            正在加载地图图层...
+            正在加载高德地图图层...
           </div>
         </div>
       )}

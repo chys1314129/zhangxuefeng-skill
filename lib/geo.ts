@@ -107,7 +107,7 @@ function transformLng(x: number, y: number): number {
 }
 
 /**
- * 浏览器 GPS (WGS-84) 转 高德/腾讯地图坐标系 (GCJ-02)
+ * 浏览器 GPS (WGS-84) 转 高德地图坐标系 (GCJ-02)
  */
 export function wgs84ToGcj02(
   lng: number,

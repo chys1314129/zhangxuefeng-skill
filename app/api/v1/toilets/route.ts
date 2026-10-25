@@ -13,14 +13,26 @@ export async function GET(request: NextRequest) {
     const lng = parseFloat(searchParams.get('lng') || '116.397428');
     const lat = parseFloat(searchParams.get('lat') || '39.90923');
     const radius = Math.min(
-      Math.max(parseInt(searchParams.get('radius') || '2500', 10), 100),
-      15000
+      Math.max(parseInt(searchParams.get('radius') || '3000', 10), 100),
+      20000
     );
     const page = Math.max(parseInt(searchParams.get('page') || '1', 10), 1);
     const limit = Math.min(
-      Math.max(parseInt(searchParams.get('limit') || '60', 10), 1),
-      120
+      Math.max(parseInt(searchParams.get('limit') || '300', 10), 1),
+      500
     );
+
+    const minLng = parseFloat(searchParams.get('minLng') || '');
+    const minLat = parseFloat(searchParams.get('minLat') || '');
+    const maxLng = parseFloat(searchParams.get('maxLng') || '');
+    const maxLat = parseFloat(searchParams.get('maxLat') || '');
+    const bounds =
+      Number.isFinite(minLng) &&
+      Number.isFinite(minLat) &&
+      Number.isFinite(maxLng) &&
+      Number.isFinite(maxLat)
+        ? { minLng, minLat, maxLng, maxLat }
+        : null;
 
     const isFree = searchParams.get('isFree') === 'true';
     const hasPaper = searchParams.get('hasPaper') === 'true';
@@ -34,6 +46,7 @@ export async function GET(request: NextRequest) {
       lng: Number.isFinite(lng) ? lng : 116.397428,
       lat: Number.isFinite(lat) ? lat : 39.90923,
       radius,
+      bounds,
       page,
       limit,
       userId: user?.id,
