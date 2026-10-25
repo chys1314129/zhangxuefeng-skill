@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Navigation,
   Star,
+  X,
 } from 'lucide-react';
 import { estimateWalkMinutes, formatDistance } from '@/lib/geo';
 import { getInferredCategoryMeta } from '@/lib/inferredVenues';
@@ -17,12 +18,14 @@ interface NearestToiletCardProps {
   toilet: ToiletItem;
   isNearest?: boolean;
   onNavigate: (toilet: ToiletItem) => void;
+  onClose?: () => void;
 }
 
 export default function NearestToiletCard({
   toilet,
   isNearest = false,
   onNavigate,
+  onClose,
 }: NearestToiletCardProps) {
   const isInferred = toilet.source === 'INFERRED';
   const inferredMeta = isInferred
@@ -31,13 +34,13 @@ export default function NearestToiletCard({
 
   return (
     <div
-      className={`bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border p-3.5 sm:p-4 transition ${
+      className={`bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border p-3 sm:p-3.5 transition ${
         isInferred ? 'border-amber-300/90' : 'border-slate-200/80'
       }`}
     >
-      <div className="flex items-start justify-between gap-2.5">
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+          <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
             {isInferred && inferredMeta ? (
               <>
                 <span className="text-[11px] font-bold bg-amber-500 text-white px-2 py-0.5 rounded-full">
@@ -56,7 +59,7 @@ export default function NearestToiletCard({
             )}
             {toilet.status === 'PRIVATE' && (
               <span className="text-[11px] font-semibold bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                🔒 我的私人标记
+                🔒 私人标记
               </span>
             )}
             {toilet.status === 'PENDING' && (
@@ -75,13 +78,13 @@ export default function NearestToiletCard({
             href={`/toilet/${toilet.id}`}
             className="group flex items-center gap-1"
           >
-            <h3 className="font-bold text-slate-900 text-base truncate group-hover:text-blue-600 transition">
+            <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate group-hover:text-blue-600 transition">
               {toilet.name}
             </h3>
             <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
           </Link>
 
-          <div className="flex items-center gap-2 text-xs text-slate-500 mt-1 flex-wrap">
+          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
             {toilet.distance !== undefined && (
               <span
                 className={`font-semibold ${
@@ -105,17 +108,29 @@ export default function NearestToiletCard({
             )}
           </div>
         </div>
+
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="收起卡片"
+            title="收起卡片"
+            className="p-1.5 -mr-1 -mt-1 rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {isInferred ? (
-        <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200/80 px-2.5 py-1.5 flex items-start gap-1.5 text-[11px] text-amber-800 leading-relaxed">
+        <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200/80 px-2.5 py-1.5 flex items-start gap-1.5 text-[11px] text-amber-800 leading-snug">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
           <span>
-            仅推测可能提供卫生间（受营业时间与现场规定影响），请查看留言或上传实拍图自动审核转正
+            仅推测可能提供卫生间（未核实），请看留言或现场传照片自动审核转正
           </span>
         </div>
       ) : (
-        <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
+        <div className="flex items-center gap-1.5 flex-wrap mt-2">
           <span
             className={`text-[11px] px-2 py-0.5 rounded-md font-medium ${
               toilet.isFree
@@ -150,10 +165,10 @@ export default function NearestToiletCard({
       )}
 
       {/* 操作按钮行 */}
-      <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-slate-100">
+      <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-slate-100">
         <Link
           href={`/toilet/${toilet.id}`}
-          className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl text-xs font-semibold transition ${
+          className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-semibold transition ${
             isInferred
               ? 'bg-amber-100/80 hover:bg-amber-200/70 text-amber-900'
               : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
@@ -161,12 +176,12 @@ export default function NearestToiletCard({
         >
           {isInferred ? (
             <>
-              <Camera className="w-4 h-4 text-amber-700" />
+              <Camera className="w-3.5 h-3.5 text-amber-700" />
               留言/传图确认 ({toilet.commentCount})
             </>
           ) : (
             <>
-              <MessageSquare className="w-4 h-4 text-blue-600" />
+              <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
               详情与留言 ({toilet.commentCount})
             </>
           )}
@@ -175,13 +190,13 @@ export default function NearestToiletCard({
         <button
           type="button"
           onClick={() => onNavigate(toilet)}
-          className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl text-white text-xs font-bold shadow-sm transition ${
+          className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-white text-xs font-bold shadow-sm transition ${
             isInferred
               ? 'bg-amber-600 hover:bg-amber-700'
               : 'bg-blue-600 hover:bg-blue-700'
           }`}
         >
-          <Navigation className="w-4 h-4" />
+          <Navigation className="w-3.5 h-3.5" />
           一键步行导航
         </button>
       </div>

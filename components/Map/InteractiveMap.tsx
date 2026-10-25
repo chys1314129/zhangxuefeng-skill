@@ -29,6 +29,8 @@ interface InteractiveMapProps {
     bounds?: MapBounds | null,
     isUserAction?: boolean
   ) => void;
+  onInteractStart?: () => void;
+  onMapBlankClick?: () => void;
   onSelectToilet?: (toilet: ToiletItem) => void;
   onPickLocation?: (lng: number, lat: number) => void;
 }
@@ -215,6 +217,8 @@ export default function InteractiveMap({
   showZoomControls = true,
   zoomControlPosition = 'bottom-left',
   onMoveEnd,
+  onInteractStart,
+  onMapBlankClick,
   onSelectToilet,
   onPickLocation,
 }: InteractiveMapProps) {
@@ -244,11 +248,15 @@ export default function InteractiveMap({
 
   const callbacksRef = useRef({
     onMoveEnd,
+    onInteractStart,
+    onMapBlankClick,
     onSelectToilet,
     onPickLocation,
   });
   callbacksRef.current = {
     onMoveEnd,
+    onInteractStart,
+    onMapBlankClick,
     onSelectToilet,
     onPickLocation,
   };
@@ -259,6 +267,7 @@ export default function InteractiveMap({
   const pickerMarkerRef = useRef<any>(null);
   const userMarkerRef = useRef<any>(null);
   const suppressMoveEndRef = useRef(false);
+  const lastMarkerClickAtRef = useRef<number>(0);
 
   // 自动识别高德 Key 类型
   useEffect(() => {
@@ -342,6 +351,16 @@ export default function InteractiveMap({
             touchZoom: true,
           });
 
+          instance.on('dragstart', () => {
+            if (!suppressMoveEndRef.current) {
+              callbacksRef.current.onInteractStart?.();
+            }
+          });
+          instance.on('zoomstart', () => {
+            if (!suppressMoveEndRef.current) {
+              callbacksRef.current.onInteractStart?.();
+            }
+          });
           instance.on('moveend', () => emitViewport(false));
           instance.on('zoomend', () => emitViewport(false));
 
@@ -352,6 +371,12 @@ export default function InteractiveMap({
                   Number(e.lnglat.getLng()),
                   Number(e.lnglat.getLat())
                 );
+              }
+            });
+          } else {
+            instance.on('click', () => {
+              if (Date.now() - lastMarkerClickAtRef.current > 140) {
+                callbacksRef.current.onMapBlankClick?.();
               }
             });
           }
@@ -394,6 +419,16 @@ export default function InteractiveMap({
         }
       ).addTo(instance);
 
+      instance.on('dragstart', () => {
+        if (!suppressMoveEndRef.current) {
+          callbacksRef.current.onInteractStart?.();
+        }
+      });
+      instance.on('zoomstart', () => {
+        if (!suppressMoveEndRef.current) {
+          callbacksRef.current.onInteractStart?.();
+        }
+      });
       instance.on('moveend', () => emitViewport(false));
       instance.on('zoomend', () => emitViewport(false));
 
@@ -404,6 +439,12 @@ export default function InteractiveMap({
               Number(e.latlng.lng),
               Number(e.latlng.lat)
             );
+          }
+        });
+      } else {
+        instance.on('click', () => {
+          if (Date.now() - lastMarkerClickAtRef.current > 140) {
+            callbacksRef.current.onMapBlankClick?.();
           }
         });
       }
@@ -600,6 +641,7 @@ export default function InteractiveMap({
           zIndex: isSelected || isHovered ? 240 : isNearest ? 200 : 120,
         });
         marker.on('click', () => {
+          lastMarkerClickAtRef.current = Date.now();
           callbacksRef.current.onSelectToilet?.(toilet);
         });
         return marker;
@@ -633,6 +675,7 @@ export default function InteractiveMap({
           zIndexOffset: isSelected || isHovered ? 900 : isNearest ? 600 : 100,
         }).addTo(map);
         m.on('click', () => {
+          lastMarkerClickAtRef.current = Date.now();
           callbacksRef.current.onSelectToilet?.(toilet);
         });
         return m;
