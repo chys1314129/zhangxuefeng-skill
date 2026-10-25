@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getAuthUser } from '@/lib/auth';
 import {
   locateByIpServer,
   reverseGeocodeServer,
-  searchAroundToiletsServer,
-  searchInferredVenuesServer,
+  syncAreaToiletsSharedServer,
+  syncInferredVenuesSharedServer,
 } from '@/lib/amap-server';
 import type { MapBounds } from '@/types';
 
@@ -38,10 +39,20 @@ export async function GET(request: NextRequest) {
   }
 
   const radius = parseInt(searchParams.get('radius') || '3000', 10);
+  const force = searchParams.get('force') === 'true';
+  const authUser = force ? await getAuthUser(request) : null;
+  const isAdmin =
+    authUser?.role === 'ADMIN' || authUser?.role === 'SUPER_ADMIN';
 
   if (mode === 'inferred') {
-    const venues = await searchInferredVenuesServer({ lng, lat, radius });
-    return NextResponse.json({ code: 200, data: { venues } });
+    const stats = await syncInferredVenuesSharedServer({
+      lng,
+      lat,
+      radius,
+      force,
+      isAdmin,
+    });
+    return NextResponse.json({ code: 200, data: stats });
   }
 
   const minLng = parseFloat(searchParams.get('minLng') || '');
@@ -57,6 +68,14 @@ export async function GET(request: NextRequest) {
       ? { minLng, minLat, maxLng, maxLat }
       : null;
 
-  const pois = await searchAroundToiletsServer({ lng, lat, radius, bounds });
-  return NextResponse.json({ code: 200, data: { pois } });
+  const stats = await syncAreaToiletsSharedServer({
+    lng,
+    lat,
+    radius,
+    bounds,
+    force,
+    isAdmin,
+  });
+
+  return NextResponse.json({ code: 200, data: stats });
 }

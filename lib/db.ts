@@ -148,6 +148,18 @@ function initSchema(db: SQLiteDB) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_verifications_toilet ON toilet_verifications(toilet_id);
+
+    CREATE TABLE IF NOT EXISTS amap_sync_cells (
+      cell_key TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      center_lng REAL NOT NULL,
+      center_lat REAL NOT NULL,
+      radius INTEGER NOT NULL,
+      poi_count INTEGER NOT NULL DEFAULT 0,
+      synced_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_amap_sync_cells_time ON amap_sync_cells(synced_at);
   `);
 
   // 兼容已有线上持久化数据库的无损平滑加列迁移（绝不覆盖或丢失旧数据）
@@ -1129,3 +1141,80 @@ export function findUserById(id: string): AuthUser | null {
     createdAt: String(row.created_at),
   };
 }
+
+// ==================== 全站共享区域冷却缓存（持久化于 SQLite /data） ====================
+
+/**
+ * 将经纬度量化为约 1.1km × 1.1km 的共享街区网格（远小于 2.5km~6km 的高德周边检索半径，确保相邻网格完全覆盖无死角）
+ */
+export function makeSharedAreaCellKey(
+  kind: 'AROUND' | 'INFERRED',
+  lng: number,
+  lat: number
+): string {
+  const gLng = Math.round(lng * 90);
+  const gLat = Math.round(lat * 90);
+  return `${kind}:${gLng}_${gLat}`;
+}
+
+export interface AreaSyncCellRecord {
+  cellKey: string;
+  kind: string;
+  centerLng: number;
+  centerLat: number;
+  radius: number;
+  poiCount: number;
+  syncedAt: number;
+}
+
+export function getAreaSyncCell(cellKey: string): AreaSyncCellRecord | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT cell_key, kind, center_lng, center_lat, radius, poi_count, synced_at
+       FROM amap_sync_cells
+       WHERE cell_key = ?`
+    )
+    .get(cellKey) as Record<string, any> | undefined;
+
+  if (!row) return null;
+  return {
+    cellKey: String(row.cell_key),
+    kind: String(row.kind),
+    centerLng: Number(row.center_lng),
+    centerLat: Number(row.center_lat),
+    radius: Number(row.radius),
+    poiCount: Number(row.poi_count || 0),
+    syncedAt: Number(row.synced_at || 0),
+  };
+}
+
+export function recordAreaSyncCell(opts: {
+  cellKey: string;
+  kind: 'AROUND' | 'INFERRED';
+  lng: number;
+  lat: number;
+  radius: number;
+  poiCount: number;
+}) {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO amap_sync_cells (cell_key, kind, center_lng, center_lat, radius, poi_count, synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(cell_key) DO UPDATE SET
+       center_lng = excluded.center_lng,
+       center_lat = excluded.center_lat,
+       radius = excluded.radius,
+       poi_count = excluded.poi_count,
+       synced_at = excluded.synced_at`
+  ).run(
+    opts.cellKey,
+    opts.kind,
+    opts.lng,
+    opts.lat,
+    Math.round(opts.radius),
+    opts.poiCount,
+    Date.now()
+  );
+}
+

@@ -4,11 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { useAuth } from '@/hooks/useAuth';
 import { haversineDistance } from '@/lib/geo';
-import type { DiscoveredInferredVenue } from '@/lib/inferredVenues';
 import {
-  DiscoveredPOI,
-  searchInferredVenuePOIsClient,
-  searchNearbyToiletPOIsClient,
+  syncInferredVenuesSharedClient,
+  syncNearbyToiletsSharedClient,
 } from '@/lib/mapService';
 import {
   batchMeasureWalkingRoutesClient,
@@ -36,20 +34,12 @@ interface UseToiletsParams {
   filters?: ToiletFilters;
 }
 
-function makeGridKey(
-  lng: number,
-  lat: number,
-  bounds?: MapBounds | null
-): string {
-  const gLng = Math.round(lng * 400);
-  const gLat = Math.round(lat * 400);
-  const span = bounds
-    ? Math.round((bounds.maxLng - bounds.minLng) * 100)
-    : 0;
-  return `${gLng}_${gLat}_${span}`;
+// 与服务端共享区域冷却网格对齐（约 1.1km × 1.1km 街区网格）
+function makeSharedGridKey(lng: number, lat: number): string {
+  return `${Math.round(lng * 90)}_${Math.round(lat * 90)}`;
 }
 
-const CELL_SYNC_TTL_MS = 10 * 60 * 1000; // 10分钟网格自动复检，保持与高德最新厕所动态同步
+const CLIENT_CHECK_TTL_MS = 10 * 60 * 1000;
 
 export function useToilets({
   lng,
@@ -132,65 +122,6 @@ export function useToilets({
     }
   );
 
-  const syncWaveToServer = useCallback(
-    async (
-      wavePois: DiscoveredPOI[],
-      extra?: {
-        fullScan?: boolean;
-        scanCenter?: { lng: number; lat: number; force?: boolean };
-      }
-    ) => {
-      if (!wavePois.length) return 0;
-      try {
-        const res = await fetch('/api/v1/toilets/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pois: wavePois,
-            fullScan: extra?.fullScan,
-            scanCenter: extra?.scanCenter,
-          }),
-        });
-        const json = await res.json();
-        const changedCount =
-          Number(json?.data?.synced || 0) +
-          Number(json?.data?.updated || 0) +
-          Number(json?.data?.retired || 0);
-        if (changedCount > 0) {
-          mutate();
-        }
-        return changedCount;
-      } catch {
-        return 0;
-      }
-    },
-    [mutate]
-  );
-
-  const syncInferredToServer = useCallback(
-    async (venues: DiscoveredInferredVenue[]) => {
-      if (!venues.length) return 0;
-      try {
-        const res = await fetch('/api/v1/toilets/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ inferredVenues: venues }),
-        });
-        const json = await res.json();
-        const changedCount =
-          Number(json?.data?.syncedInferred || 0) +
-          Number(json?.data?.updated || 0);
-        if (changedCount > 0) {
-          mutate();
-        }
-        return changedCount;
-      } catch {
-        return 0;
-      }
-    },
-    [mutate]
-  );
-
   const runPoiDiscovery = useCallback(
     async (
       targetLng: number,
@@ -199,41 +130,39 @@ export function useToilets({
       targetBounds: MapBounds | null,
       force = false
     ): Promise<number> => {
-      const cellKey = makeGridKey(targetLng, targetLat, targetBounds);
-      const lastSyncTs = syncedCellsRef.current.get(cellKey) || 0;
-      if (!force && lastSyncTs > 0 && Date.now() - lastSyncTs < CELL_SYNC_TTL_MS) {
+      const cellKey = makeSharedGridKey(targetLng, targetLat);
+      const lastCheckTs = syncedCellsRef.current.get(cellKey) || 0;
+      if (
+        !force &&
+        lastCheckTs > 0 &&
+        Date.now() - lastCheckTs < CLIENT_CHECK_TTL_MS
+      ) {
         setHasCompletedInitialScan(true);
         return 0;
       }
 
       setIsSyncingPois(true);
       try {
-        const allPois = await searchNearbyToiletPOIsClient(
-          targetLng,
-          targetLat,
-          Math.min(Math.max(targetRadius, 2500), 8000),
-          targetBounds,
-          (wavePois) => {
-            void syncWaveToServer(wavePois);
-          }
-        );
+        const res = await syncNearbyToiletsSharedClient({
+          lng: targetLng,
+          lat: targetLat,
+          radius: Math.min(Math.max(targetRadius, 2500), 8000),
+          bounds: targetBounds,
+          force,
+          authFetch,
+        });
 
-        if (allPois.length > 0) {
-          syncedCellsRef.current.set(cellKey, Date.now());
-          // 全波次拉取完成后执行一次增量变更校准与下线点位巡检
-          await syncWaveToServer(allPois, {
-            fullScan: true,
-            scanCenter: { lng: targetLng, lat: targetLat, force },
-          });
+        syncedCellsRef.current.set(cellKey, Date.now());
+        if (res.synced + res.updated + res.retired > 0) {
           await mutate();
         }
-        return allPois.length;
+        return res.poiCount;
       } finally {
         setIsSyncingPois(false);
         setHasCompletedInitialScan(true);
       }
     },
-    [mutate, syncWaveToServer]
+    [authFetch, mutate]
   );
 
   const runInferredDiscovery = useCallback(
@@ -243,30 +172,36 @@ export function useToilets({
       targetRadius: number,
       force = false
     ): Promise<number> => {
-      const cellKey = `${Math.round(targetLng * 300)}_${Math.round(targetLat * 300)}`;
-      const lastSyncTs = syncedInferredCellsRef.current.get(cellKey) || 0;
-      if (!force && lastSyncTs > 0 && Date.now() - lastSyncTs < CELL_SYNC_TTL_MS) {
+      const cellKey = makeSharedGridKey(targetLng, targetLat);
+      const lastCheckTs = syncedInferredCellsRef.current.get(cellKey) || 0;
+      if (
+        !force &&
+        lastCheckTs > 0 &&
+        Date.now() - lastCheckTs < CLIENT_CHECK_TTL_MS
+      ) {
         return 0;
       }
 
       setIsSyncingInferred(true);
       try {
-        const venues = await searchInferredVenuePOIsClient(
-          targetLng,
-          targetLat,
-          Math.min(Math.max(targetRadius, 1800), 5000)
-        );
-        if (venues.length > 0) {
-          syncedInferredCellsRef.current.set(cellKey, Date.now());
-          await syncInferredToServer(venues);
+        const res = await syncInferredVenuesSharedClient({
+          lng: targetLng,
+          lat: targetLat,
+          radius: Math.min(Math.max(targetRadius, 1800), 5000),
+          force,
+          authFetch,
+        });
+
+        syncedInferredCellsRef.current.set(cellKey, Date.now());
+        if (res.syncedInferred + res.updated > 0) {
           await mutate();
         }
-        return venues.length;
+        return res.poiCount;
       } finally {
         setIsSyncingInferred(false);
       }
     },
-    [mutate, syncInferredToServer]
+    [authFetch, mutate]
   );
 
   useEffect(() => {
@@ -305,7 +240,7 @@ export function useToilets({
       if (!cancelled) {
         void runInferredDiscovery(lng, lat, radius, false);
       }
-    }, 480);
+    }, 450);
 
     return () => {
       cancelled = true;
@@ -322,14 +257,14 @@ export function useToilets({
 
   const rawToilets: ToiletItem[] = data?.data?.toilets || [];
 
-  // 异步调用高德步行路网 API 批量计算「用户定位 -> 各目标厕所」的最短可行路线距离（绕开江河湖泊、围墙与护栏）
+  // 通过纯后端缓存网关批量计算「用户定位 -> 各候选厕所」的最短可行步行路网距离
   useEffect(() => {
     if (!distOrigin || rawToilets.length === 0) return;
 
     const uLng = distOrigin.lng;
     const uLat = distOrigin.lat;
 
-    // 筛选直线距离 9.5km 内的可步行候选点（按直线距离由近到远优先测算）
+    // 精选直线 8km 内最近的最多 45 个点位测算步行路网（大幅节省配额，且服务端共享 ~35m 起点网格缓存）
     const walkable = rawToilets
       .map((t) => ({
         id: t.id,
@@ -338,14 +273,15 @@ export function useToilets({
         source: t.source,
         sDist: haversineDistance(uLng, uLat, t.lng, t.lat),
       }))
-      .filter((t) => t.sDist <= 9500)
-      .sort((a, b) => a.sDist - b.sDist);
+      .filter((t) => t.sDist <= 8000)
+      .sort((a, b) => a.sDist - b.sDist)
+      .slice(0, 45);
 
     if (walkable.length === 0) return;
 
-    const hasUncached = walkable
-      .slice(0, 80)
-      .some((t) => !getCachedRouteMetrics(uLng, uLat, t.id));
+    const hasUncached = walkable.some(
+      (t) => !getCachedRouteMetrics(uLng, uLat, t.id)
+    );
     if (!hasUncached) return;
 
     let cancelled = false;
@@ -353,14 +289,13 @@ export function useToilets({
       const measured = await batchMeasureWalkingRoutesClient(
         uLng,
         uLat,
-        walkable.slice(0, 80)
+        walkable
       );
       if (cancelled) return;
       if (measured.size > 0) {
         setRouteTick((v) => v + 1);
       }
 
-      // 对当前路网距离排第一的最近点位再执行一次正向 v3/direction/walking 最短方案核验
       const topConfirmed = walkable
         .filter((w) => w.source !== 'INFERRED')
         .sort((a, b) => {
@@ -381,7 +316,7 @@ export function useToilets({
           setRouteTick((v) => v + 1);
         }
       }
-    }, 300);
+    }, 320);
 
     return () => {
       cancelled = true;
@@ -389,7 +324,6 @@ export function useToilets({
     };
   }, [distOrigin?.lng, distOrigin?.lat, rawToilets]);
 
-  // 融合高德最短可行路线距离并重新按真实路线距离由近到远排序
   const toilets: ToiletItem[] = useMemo(() => {
     void routeTick;
     if (!distOrigin) return rawToilets;

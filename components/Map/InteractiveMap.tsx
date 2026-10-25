@@ -6,9 +6,6 @@ import { formatDistance } from '@/lib/geo';
 import { getInferredCategoryMeta } from '@/lib/inferredVenues';
 import type { MapBounds, ToiletItem } from '@/types';
 
-const AMAP_KEY = process.env.NEXT_PUBLIC_AMAP_KEY || '';
-const AMAP_SECURITY_CODE = process.env.NEXT_PUBLIC_AMAP_SECURITY_CODE || '';
-
 interface InteractiveMapProps {
   center: [number, number]; // [lng, lat]
   zoom?: number;
@@ -34,38 +31,6 @@ interface InteractiveMapProps {
   onMapBlankClick?: () => void;
   onSelectToilet?: (toilet: ToiletItem) => void;
   onPickLocation?: (lng: number, lat: number) => void;
-}
-
-let cachedAmapKeyType: 'unknown' | 'jsapi' | 'webservice' = 'unknown';
-
-async function detectAmapKeyMode(): Promise<'jsapi' | 'webservice'> {
-  if (cachedAmapKeyType !== 'unknown') return cachedAmapKeyType;
-  if (!AMAP_KEY) {
-    cachedAmapKeyType = 'webservice';
-    return 'webservice';
-  }
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2200);
-    const res = await fetch(
-      `https://restapi.amap.com/v3/ip?key=${encodeURIComponent(AMAP_KEY)}`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timer);
-    const data = await res.json();
-    if (data?.status === '1') {
-      cachedAmapKeyType = 'webservice';
-      return 'webservice';
-    }
-    if (data?.infocode === '10009') {
-      cachedAmapKeyType = 'jsapi';
-      return 'jsapi';
-    }
-  } catch {
-    // ignore
-  }
-  cachedAmapKeyType = 'webservice';
-  return 'webservice';
 }
 
 function escapeHtml(text: string): string {
@@ -229,9 +194,9 @@ export default function InteractiveMap({
   onPickLocation,
 }: InteractiveMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [resolvedEngine, setResolvedEngine] = useState<
-    'amap-sdk' | 'autonavi-tiles' | null
-  >(null);
+  const [resolvedEngine] = useState<'amap-sdk' | 'autonavi-tiles'>(
+    'autonavi-tiles'
+  );
   const [mapReady, setMapReady] = useState(false);
   const [currentZoom, setCurrentZoom] = useState(zoom);
 
@@ -276,28 +241,7 @@ export default function InteractiveMap({
   const suppressMoveEndRef = useRef(false);
   const lastMarkerClickAtRef = useRef<number>(0);
 
-  // 自动识别高德 Key 类型
-  useEffect(() => {
-    let active = true;
-    setMapReady(false);
-
-    async function decide() {
-      const mode = await detectAmapKeyMode();
-      if (!active) return;
-      if (mode === 'jsapi' && AMAP_KEY) {
-        setResolvedEngine('amap-sdk');
-      } else {
-        setResolvedEngine('autonavi-tiles');
-      }
-    }
-
-    decide();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // 初始化高德地图实例（始终使用 liveViewRef 最新坐标而非旧初始值）
+  // 初始化高德底图实例（零前端 Key 暴露，0 底图 API 配额消耗）
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !resolvedEngine) return;
@@ -330,77 +274,6 @@ export default function InteractiveMap({
 
     async function setup() {
       const startView = liveViewRef.current;
-
-      if (activeEngine === 'amap-sdk') {
-        try {
-          if (AMAP_SECURITY_CODE) {
-            (window as any)._AMapSecurityConfig = {
-              securityJsCode: AMAP_SECURITY_CODE,
-            };
-          }
-          const AMapLoaderMod = await import('@amap/amap-jsapi-loader');
-          const AMapLoader = AMapLoaderMod.default || AMapLoaderMod;
-          const AMap = await AMapLoader.load({
-            key: AMAP_KEY,
-            version: '2.0',
-            plugins: ['AMap.PlaceSearch', 'AMap.Geocoder', 'AMap.Scale'],
-          });
-          if (destroyed) return;
-
-          const latestStart = liveViewRef.current;
-          instance = new AMap.Map(containerEl, {
-            zoom: latestStart.zoom,
-            center: [latestStart.lng, latestStart.lat],
-            viewMode: '2D',
-            dragEnable: true,
-            zoomEnable: true,
-            doubleClickZoom: true,
-            scrollWheel: true,
-            touchZoom: true,
-          });
-
-          instance.on('dragstart', () => {
-            if (!suppressMoveEndRef.current) {
-              callbacksRef.current.onInteractStart?.();
-            }
-          });
-          instance.on('zoomstart', () => {
-            if (!suppressMoveEndRef.current) {
-              callbacksRef.current.onInteractStart?.();
-            }
-          });
-          instance.on('moveend', () => emitViewport(false));
-          instance.on('zoomend', () => emitViewport(false));
-
-          if (pickerMode) {
-            instance.on('click', (e: any) => {
-              if (e?.lnglat) {
-                callbacksRef.current.onPickLocation?.(
-                  Number(e.lnglat.getLng()),
-                  Number(e.lnglat.getLat())
-                );
-              }
-            });
-          } else {
-            instance.on('click', () => {
-              if (Date.now() - lastMarkerClickAtRef.current > 140) {
-                callbacksRef.current.onMapBlankClick?.();
-              }
-            });
-          }
-
-          mapRef.current = instance;
-          appliedFlyVersionRef.current = flyVersion;
-          setMapReady(true);
-          setTimeout(() => emitViewport(true), 80);
-          return;
-        } catch {
-          if (!destroyed) {
-            setResolvedEngine('autonavi-tiles');
-          }
-          return;
-        }
-      }
 
       const L = (await import('leaflet')).default;
       if (destroyed) return;
