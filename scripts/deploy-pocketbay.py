@@ -138,6 +138,8 @@ def build_project_zip(repo_root: Path, approved_configs: set[str], out_zip: Path
                 if fname == ".DS_Store" or fname.endswith(EXCLUDED_SUFFIXES):
                     continue
                 rel_path = (rel_dir / fname).as_posix() if str(rel_dir) != "." else fname
+                if rel_path.startswith(("app/download/", "app/api/download-package/")):
+                    continue
 
                 # 过滤敏感 .env 文件：仅打包配对页批准的相对路径（保留公开模板 .env.example）
                 if fname.startswith(".env") and fname != ".env.example":
